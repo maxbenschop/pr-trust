@@ -1,0 +1,14 @@
+# .github/trust.yml for projects buried in generated pull requests ("Trusted only" on the website).
+# Only people you, or projects you trust, have vouched for, or who have merged work here,
+# can open pull requests that stay open. Everyone else is closed with a comment that
+# explains how to get vouched. Docs stay open to everyone.
+own_list: auto
+admit:
+  - list: ghostty-org/ghostty
+  - merged: { repo: self, within: 24mo }
+exempt_paths:
+  - "docs/**"
+  - "**/*.md"
+on_unknown: close
+on_denounced: close
+comment: unknown
