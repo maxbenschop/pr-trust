@@ -14,4 +14,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Pin to a release commit; replace the hash with the release you use.
-      - uses: maxbenschop/pr-trust@COMMIT_SHA # v0.1.0
+      - uses: maxbenschop/pr-trust@42d48f665bc08357050696e66beac9c314946f96 # v0.1.0

@@ -1,7 +1,7 @@
 "use strict";
 
 /* Release the snippets point at. Updated on each release. */
-const RELEASE = { repo: "maxbenschop/pr-trust", tag: "v0.1.0", sha: "COMMIT_SHA" };
+const RELEASE = { repo: "maxbenschop/pr-trust", tag: "v0.1.0", sha: "42d48f665bc08357050696e66beac9c314946f96" };
 const VOUCH_ACTION = "mitchellh/vouch/action/check-pr@d66fa29a64600490892131ad87597c30c91fcac4 # v1";
 
 /* Projects whose merge history works with `merged` rules (checked in GitHub search). */
