@@ -1,13 +1,31 @@
-# This repository's own contributor check: label-only, using the Action as of the default branch.
+# This repository's own contributor check, using the Action as of the default branch.
 name: Contributor trust
 
 on:
-  pull_request_target:
+  pull_request_target: # runs from the default branch; never checks out PR code
     types: [opened, reopened]
+  workflow_dispatch: # re-run by hand, e.g. after vouching for someone
+    inputs:
+      pr-number:
+        description: Pull request to check
+        required: true
+      as-author:
+        description: Optional. Check it as if this username had opened it (to try out the rules)
+        required: false
+        default: ""
+      dry-run:
+        description: Report only, change nothing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
   pull-requests: write
+  issues: write # create the trust labels the first time they are used
+
+concurrency:
+  group: pr-trust-${{ github.event.pull_request.number || inputs.pr-number }}
+  cancel-in-progress: false
 
 jobs:
   check:
@@ -18,3 +36,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./
+        with:
+          pr-number: ${{ inputs.pr-number }}
+          as-author: ${{ inputs.as-author }}
+          dry-run: ${{ inputs.dry-run || false }}

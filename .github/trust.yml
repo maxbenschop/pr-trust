@@ -1,5 +1,20 @@
 # Rules for this repository's own contributor check.
+# Reference: https://github.com/maxbenschop/pr-trust#configuration
+
+# .github/VOUCHED.td: maintainers vouch for (or denounce) people here.
 own_list: auto
+
 admit:
-  - merged: { repo: self, min: 1, within: 24mo }
-on_unknown: label
+  # People vouched for by Ghostty's maintainers, a large, actively curated Vouch list.
+  - list: ghostty-org/ghostty
+  # Anyone who has had a pull request merged here in the last two years.
+  - merged: { repo: self, within: 24mo }
+
+# Anyone may suggest a trust list for the website or fix documentation.
+exempt_paths:
+  - "lists/catalog.json"
+  - "**/*.md"
+
+on_unknown: label     # never close newcomers' pull requests here; a maintainer reviews them
+on_denounced: close
+comment: unknown      # tell unknown authors how to get vouched

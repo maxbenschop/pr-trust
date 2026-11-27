@@ -72,6 +72,18 @@ export function isBotAccount(login: string, type: string | null): boolean {
   return type === "Bot" || /\[bot\]$/i.test(login);
 }
 
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/**
+ * For trying rules out: treat the pull request as if `login` had opened it, as an outside
+ * contributor. The real author's write access and bot status no longer apply.
+ */
+export function asAuthor(pr: PullRequestInfo, login: string): PullRequestInfo {
+  const name = login.trim().replace(/^@/, "");
+  if (!LOGIN.test(name)) throw new Error(`as-author must be a GitHub username, got "${login}"`);
+  return { ...pr, author: name, authorType: "User", association: "NONE" };
+}
+
 export async function runCheck(gh: GitHubClient, input: CheckInput): Promise<CheckResult> {
   const { pr, dryRun } = input;
   const log = input.log ?? (() => {});

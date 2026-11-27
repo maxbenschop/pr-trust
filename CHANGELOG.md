@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `as-author` input: check a pull request as if another account had opened it, to try out
+  rules (for example from `workflow_dispatch`).
+- This repository now accepts Ghostty's Vouch list and lets anyone change docs or suggest a
+  trust list, and its check can be re-run by hand.
 - The comment left on unknown pull requests links to a new page for contributors explaining
   the labels and how to get vouched: https://maxbenschop.github.io/pr-trust/contributors/
 - New website design, with real backtest results for ten projects and the live trust list

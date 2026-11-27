@@ -18,6 +18,12 @@ inputs:
   pr-number:
     description: Check this pull request instead of the one in the triggering event.
     default: ""
+  as-author:
+    description: >-
+      For trying out rules: check the pull request as if this GitHub username had opened it as an
+      outside contributor. Labels and comments are applied unless dry-run is on. Leave empty in
+      normal use.
+    default: ""
   fail-on-error:
     description: Fail the job when the check itself fails. The PR is never closed on an error either way.
     default: "false"

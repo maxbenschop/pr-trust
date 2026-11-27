@@ -9656,6 +9656,12 @@ function pullRequestFromApi(repo, pr) {
 function isBotAccount(login, type) {
   return type === "Bot" || /\[bot\]$/i.test(login);
 }
+var LOGIN2 = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+function asAuthor(pr, login) {
+  const name = login.trim().replace(/^@/, "");
+  if (!LOGIN2.test(name)) throw new Error(`as-author must be a GitHub username, got "${login}"`);
+  return { ...pr, author: name, authorType: "User", association: "NONE" };
+}
 async function runCheck(gh, input2) {
   const { pr, dryRun } = input2;
   const log = input2.log ?? (() => {
@@ -9928,6 +9934,16 @@ async function main() {
   } else {
     command("error", "This event has no pull request. Run on pull_request_target, or set the pr-number input.");
     return 1;
+  }
+  const pretend = input("as-author");
+  if (pretend) {
+    try {
+      pr = asAuthor(pr, pretend);
+    } catch (error) {
+      command("error", error.message);
+      return 1;
+    }
+    command("warning", `Checking #${pr.number} as if @${pr.author} had opened it (as-author). Use this only to try out your rules.`);
   }
   const result = await runCheck(gh, {
     pr,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMMENT_MARKER, planActions, runCheck, type PullRequestInfo } from "../src/action/check.ts";
+import { asAuthor, COMMENT_MARKER, planActions, runCheck, type PullRequestInfo } from "../src/action/check.ts";
 import { summaryMarkdown } from "../src/action/report.ts";
 import { parseConfig } from "../src/engine/config.ts";
 import type { GitHubClient, RestResponse } from "../src/github/client.ts";
@@ -204,5 +204,19 @@ describe("summaryMarkdown", () => {
     });
     expect(text).toContain("| Actions (dry run, not applied) | close the pull request |");
     expect(text).toContain("- something odd");
+  });
+});
+
+describe("asAuthor", () => {
+  const pr = {
+    repo: "o/r", number: 7, author: "owner", authorType: "User", association: "OWNER",
+    state: "open", labels: [], changedFiles: 1,
+  };
+  it("swaps in the given login as an outside contributor", () => {
+    expect(asAuthor(pr, "@someone-else")).toMatchObject({ author: "someone-else", association: "NONE", authorType: "User", number: 7 });
+  });
+  it("rejects anything that is not a username", () => {
+    expect(() => asAuthor(pr, "a b")).toThrow(/GitHub username/);
+    expect(() => asAuthor(pr, "x".repeat(40))).toThrow();
   });
 });

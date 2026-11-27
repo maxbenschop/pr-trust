@@ -112,6 +112,7 @@ people trusted by the projects it trusts.
 | `config` | `.github/trust.yml` | Rules file on the default branch |
 | `dry-run` | `false` | Decide and report, change nothing |
 | `pr-number` | from the event | Check another PR, for example from `workflow_dispatch` |
+| `as-author` | empty | Try your rules: check the PR as if this username had opened it as an outside contributor. Labels and comments are applied unless `dry-run` is on |
 | `fail-on-error` | `false` | Fail the job when the check fails (the PR stays open regardless) |
 
 | Output | |

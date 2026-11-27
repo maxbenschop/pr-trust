@@ -1,11 +1,11 @@
 /**
  * GitHub Action entry point. Reads the event and inputs from the runner's environment,
  * runs the check and reports through outputs, annotations and the job summary.
- * Inputs: github-token, config, dry-run, pr-number, fail-on-error.
+ * Inputs: github-token, config, dry-run, pr-number, as-author, fail-on-error.
  */
 import fs from "node:fs";
 import { createClient } from "../github/client.ts";
-import { pullRequestFromApi, runCheck } from "./check.ts";
+import { asAuthor, pullRequestFromApi, runCheck } from "./check.ts";
 import { describeAction, summaryMarkdown } from "./report.ts";
 
 function input(name: string): string {
@@ -52,6 +52,17 @@ async function main(): Promise<number> {
   } else {
     command("error", "This event has no pull request. Run on pull_request_target, or set the pr-number input.");
     return 1;
+  }
+
+  const pretend = input("as-author");
+  if (pretend) {
+    try {
+      pr = asAuthor(pr, pretend);
+    } catch (error) {
+      command("error", (error as Error).message);
+      return 1;
+    }
+    command("warning", `Checking #${pr.number} as if @${pr.author} had opened it (as-author). Use this only to try out your rules.`);
   }
 
   const result = await runCheck(gh, {
