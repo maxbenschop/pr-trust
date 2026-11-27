@@ -10171,7 +10171,9 @@ var init_check = __esm({
 
 This project accepts pull requests from contributors it already trusts, and this check could not confirm that for your account ({reason}).
 
-{next}`;
+{next}
+
+[What this label means, and how to get vouched](https://maxbenschop.github.io/pr-trust/contributors/)`;
     LABEL_STYLE = {
       admitted: { color: "0e8a16", description: "Author is trusted by this project's contributor rules" },
       unknown: { color: "fbca04", description: "No contributor rule admits this author yet" },

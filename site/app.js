@@ -1,529 +1,269 @@
 "use strict";
 
 /* Release the snippets point at. Updated on each release. */
-const RELEASE = { repo: "maxbenschop/pr-trust", tag: "v0.1.0", sha: "42d48f665bc08357050696e66beac9c314946f96" };
-const VOUCH_ACTION = "mitchellh/vouch/action/check-pr@d66fa29a64600490892131ad87597c30c91fcac4 # v1";
+var RELEASE = { repo: "maxbenschop/pr-trust", tag: "v0.1.0", sha: "42d48f665bc08357050696e66beac9c314946f96" };
 
-/* Projects whose merge history works with `merged` rules (checked in GitHub search). */
-const TRACK_RECORD_SUGGESTIONS = [
-  "rust-lang/rust",
-  "python/cpython",
-  "nodejs/node",
-  "kubernetes/kubernetes",
-  "llvm/llvm-project",
-  "microsoft/TypeScript",
-  "vercel/next.js",
-  "rails/rails",
-  "home-assistant/core",
-  "astral-sh/ruff",
-];
+/* Backtest of the default rules (own list, then 1 merged PR here within 24 months),
+   outside PRs opened 2025-11-27 to 2026-11-27. From results/all.json. */
+var RESULTS = [{"repo":"ghostty-org/ghostty","own":true,"external":944,"admitted":557,"unknown":386,"denounced":1,"uMerged":105,"uRejected":63,"uWithdrawn":28,"uBot":178,"uOpen":12},{"repo":"netbox-community/netbox","own":true,"external":170,"admitted":91,"unknown":79,"denounced":0,"uMerged":41,"uRejected":26,"uWithdrawn":7,"uBot":5,"uOpen":0},{"repo":"cloudflare/workers-sdk","own":true,"external":708,"admitted":224,"unknown":484,"denounced":0,"uMerged":270,"uRejected":102,"uWithdrawn":48,"uBot":34,"uOpen":30},{"repo":"juanfont/headscale","own":true,"external":180,"admitted":34,"unknown":146,"denounced":0,"uMerged":43,"uRejected":56,"uWithdrawn":14,"uBot":18,"uOpen":15},{"repo":"triggerdotdev/trigger.dev","own":true,"external":414,"admitted":37,"unknown":377,"denounced":0,"uMerged":10,"uRejected":15,"uWithdrawn":11,"uBot":332,"uOpen":9},{"repo":"facebook/react","own":false,"external":1257,"admitted":184,"unknown":1073,"denounced":0,"uMerged":71,"uRejected":123,"uWithdrawn":183,"uBot":301,"uOpen":395},{"repo":"sveltejs/svelte","own":false,"external":545,"admitted":130,"unknown":415,"denounced":0,"uMerged":137,"uRejected":106,"uWithdrawn":46,"uBot":0,"uOpen":126},{"repo":"astral-sh/uv","own":false,"external":756,"admitted":130,"unknown":626,"denounced":0,"uMerged":128,"uRejected":168,"uWithdrawn":71,"uBot":64,"uOpen":195},{"repo":"tailwindlabs/tailwindcss","own":false,"external":308,"admitted":71,"unknown":237,"denounced":0,"uMerged":83,"uRejected":91,"uWithdrawn":18,"uBot":0,"uOpen":45},{"repo":"denoland/deno","own":false,"external":734,"admitted":222,"unknown":512,"denounced":0,"uMerged":149,"uRejected":110,"uWithdrawn":62,"uBot":0,"uOpen":191}];
 
-/* Backtest of the default rules, PRs opened 2025-11-27 to 2026-11-27. */
-const RESULTS = [
-  { repo: "ghostty-org/ghostty", vouch: true, external: 944, keeps: 78, stops: 45, through: 77, blocked: 53 },
-  { repo: "netbox-community/netbox", vouch: true, external: 170, keeps: 62, stops: 63, through: 80, blocked: 55 },
-  { repo: "cloudflare/workers-sdk", vouch: true, external: 708, keeps: 35, stops: 72, through: 70, blocked: 64 },
-  { repo: "juanfont/headscale", vouch: true, external: 180, keeps: 36, stops: 90, through: 80, blocked: 38 },
-  { repo: "triggerdotdev/trigger.dev", vouch: true, external: 414, keeps: 50, stops: 71, through: 59, blocked: 28 },
-  { repo: "facebook/react", external: 1257, keeps: 30, stops: 96, through: 52, blocked: 19 },
-  { repo: "sveltejs/svelte", external: 545, keeps: 32, stops: 84, through: 66, blocked: 47 },
-  { repo: "astral-sh/uv", external: 756, keeps: 32, stops: 94, through: 67, blocked: 35 },
-  { repo: "tailwindlabs/tailwindcss", external: 308, keeps: 28, stops: 83, through: 54, blocked: 43 },
-  { repo: "denoland/deno", external: 734, keeps: 44, stops: 72, through: 63, blocked: 46 },
-];
+var TAG = {
+  admitted: { text: "trust: admitted", bg: "#35D07F", fg: "#06150C", bd: "#35D07F", ls: "solid" },
+  unknown: { text: "trust: unknown", bg: "transparent", fg: "#D5DAD7", bd: "#848D88", ls: "dashed" },
+  denounced: { text: "trust: denounced", bg: "#3D1218", fg: "#FF8087", bd: "#3D1218", ls: "solid" },
+  none: { text: "no label", bg: "transparent", fg: "#A8B0AB", bd: "#343B37", ls: "solid" }
+};
 
-const $ = (sel, root = document) => root.querySelector(sel);
-const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+var lists = null; // from lists.json
+var builtAt = null;
 
-function escapeHtml(text) {
-  return String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+function num(n) { return Number(n).toLocaleString("en-US"); }
+
+function ago(iso) {
+  var days = Math.floor((Date.now() - new Date(iso).getTime()) / 864e5);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return days + " days ago";
+  var months = Math.round(days / 30.4);
+  if (months < 12) return months === 1 ? "a month ago" : months + " months ago";
+  var years = Math.round(days / 365);
+  return years === 1 ? "a year ago" : years + " years ago";
 }
 
-/* Minimal YAML colouring: comments and keys. */
-function highlightYaml(text) {
-  return text
-    .split("\n")
-    .map((line) => {
-      let code = line;
-      let comment = "";
-      const hash = line.search(/(^|\s)#/);
-      if (hash !== -1) {
-        code = line.slice(0, hash);
-        comment = line.slice(hash);
-      }
-      let html = escapeHtml(code).replace(/^(\s*(?:-\s+)?)([\w.-]+)(:)(?=\s|$)/, '$1<span class="tok-k">$2</span>$3');
-      if (comment) html += `<span class="tok-c">${escapeHtml(comment)}</span>`;
-      return html;
-    })
-    .join("\n");
-}
+function view(st, set) {
+  var picked = st.picked || { "ghostty-org/ghostty": true };
+  var merged = st.merged !== false;
+  var docs = !!st.docs;
+  var unknown = st.unknown || "comment";
+  var den = st.den || "close";
+  var who = st.who || "newcomer";
+  var file = st.file || "rules";
+  var copied = st.copied || "";
+  var proj = st.proj || RESULTS[0].repo;
 
-function setCode(el, text) {
-  el.dataset.raw = text;
-  el.innerHTML = highlightYaml(text);
-}
+  function copyLabel(id, idle) { return copied === id ? "Copied" : idle; }
 
-/* ---------- Theme ---------- */
-function setupTheme() {
-  const button = $("#theme-toggle");
-  const effective = () =>
-    document.documentElement.dataset.theme ||
-    (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-  const update = () => button.setAttribute("aria-label", `Switch to ${effective() === "dark" ? "light" : "dark"} theme`);
-  button.addEventListener("click", () => {
-    const next = effective() === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    try { localStorage.setItem("theme", next); } catch {}
-    update();
+  /* ---------------------------------------------------------- how it decides */
+  var ruleDefs = [
+    { text: "Bot, or someone with write access", res: "none" },
+    { text: "Denounced on your own list", res: "denounced" },
+    { text: "Vouched on your own list", res: "admitted" },
+    { text: "Vouched on a shared list you accept", res: "admitted" },
+    { text: "Merged a pull request here in the last 24 months", res: "admitted" },
+    { text: "Only changes paths you exempted", res: "admitted" },
+    { text: "Everyone else", res: "unknown" }
+  ];
+  var peopleDefs = [
+    { id: "maintainer", name: "sigrid-aasen", desc: "Maintainer with write access", hit: 0 },
+    { id: "bad", name: "xk-9911", desc: "Denounced on your own VOUCHED.td", hit: 1 },
+    { id: "own", name: "hanne-vik", desc: "Vouched on your own VOUCHED.td", hit: 2 },
+    { id: "shared", name: "tomasz-wrobel", desc: "Vouched on ghostty-org/ghostty", hit: 3 },
+    { id: "track", name: "lena-park", desc: "Two merged pull requests here this year", hit: 4 },
+    { id: "newcomer", name: "mirelle-okafor", desc: "First pull request, on no list", hit: 6 }
+  ];
+  var cur = peopleDefs.filter(function (p) { return p.id === who; })[0] || peopleDefs[5];
+  var people = peopleDefs.map(function (p) {
+    var on = p.id === cur.id;
+    return { name: p.name, desc: p.desc, on: on, bg: on ? "#151918" : "transparent", bd: on ? "#35D07F" : "#222826", pick: function () { set({ who: p.id }); } };
   });
-  update();
-}
-
-/* ---------- Copy ---------- */
-let toastTimer;
-function toast(message) {
-  const el = $("#toast");
-  el.textContent = message;
-  el.classList.add("show");
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove("show"), 1600);
-}
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast("Copied to clipboard");
-  } catch {
-    toast("Select the text and copy it manually");
-  }
-}
-
-function codeText(codeEl) {
-  return codeEl.dataset.raw ?? codeEl.textContent;
-}
-
-function setupCopy() {
-  for (const block of $$(".code[data-copy]")) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "copy-btn";
-    button.textContent = "Copy";
-    button.addEventListener("click", () => copyText(codeText($("code", block))));
-    block.append(button);
-  }
-  document.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-copy-target]");
-    if (button) copyText(codeText(document.getElementById(button.dataset.copyTarget)));
+  var ruleRows = ruleDefs.map(function (r, i) {
+    var isHit = i === cur.hit;
+    return {
+      text: r.text, isHit: isHit, isPassed: i < cur.hit, isAfter: i > cur.hit,
+      bg: isHit ? "#10281B" : "transparent",
+      fg: isHit ? "#F2F5F3" : (i < cur.hit ? "#A8B0AB" : "#848D88"),
+      weight: isHit ? 600 : 400,
+      tag: TAG[r.res]
+    };
   });
-  // Colour the static snippets too.
-  for (const code of $$(".code pre code")) if (!code.dataset.raw && code.textContent.trim()) setCode(code, code.textContent);
-}
 
-/* ---------- Generators ---------- */
-const uses = () => `${RELEASE.repo}@${RELEASE.sha} # ${RELEASE.tag}`;
+  /* ---------------------------------------------------------- install */
+  var releaseRef = RELEASE.repo + "@" + RELEASE.sha;
+  var tabs = [
+    { id: "rules", label: "trust.yml" },
+    { id: "flow", label: "workflows/pr-trust.yml" },
+    { id: "commit", label: "commit" }
+  ].map(function (t) {
+    var on = t.id === file;
+    return { label: t.label, on: on, fg: on ? "#F2F5F3" : "#8FA89A", bd: on ? "#35D07F" : "transparent", pick: function () { set({ file: t.id }); } };
+  });
+  var fileText = {
+    rules: "# .github/trust.yml\nown_list: auto # .github/VOUCHED.td, if you have one\nadmit:\n  - list: ghostty-org/ghostty # a shared list you trust\n  - merged: { repo: self, min: 1, within: 24mo }\non_unknown: label # nothing is closed\non_denounced: close\ncomment: unknown # explain how to get vouched\n",
+    flow: "# .github/workflows/pr-trust.yml\nname: Contributor trust\n\non:\n  pull_request_target: # never checks out PR code\n    types: [opened, reopened]\n\npermissions:\n  contents: read\n  pull-requests: write\n\njobs:\n  check:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: " + releaseRef + " # " + RELEASE.tag + "\n",
+    commit: 'git add .github/trust.yml .github/workflows/pr-trust.yml\ngit commit -m "Label pull requests by contributor trust"\ngit push\n'
+  };
 
-function workflowYaml({ vouch = false, dispatch = false } = {}) {
-  if (dispatch) {
-    return `name: Contributor trust (on demand)
-on:
-  workflow_dispatch:
-    inputs:
-      pr:
-        description: Pull request number
-        required: true
-permissions:
-  contents: read
-  pull-requests: read
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: ${uses()}
-        with:
-          pr-number: \${{ inputs.pr }}
-          dry-run: "true"   # report only; see the job summary`;
+  /* ---------------------------------------------------------- directory */
+  var all = (lists || []).slice().sort(function (a, b) { return (b.stars || 0) - (a.stars || 0); });
+  var filter = (st.filter || "").trim().toLowerCase();
+  var shown = all.filter(function (l) {
+    return !filter || [l.repo, l.description || "", l.language || ""].join(" ").toLowerCase().indexOf(filter) !== -1;
+  });
+  var showAll = !!st.showAll || !!filter;
+  var visible = showAll ? shown : shown.slice(0, 6);
+  function toggle(repo) {
+    return function () {
+      var next = Object.assign({}, picked);
+      next[repo] = !picked[repo];
+      set({ picked: next });
+    };
   }
-  const head = `name: ${vouch ? "Vouch check" : "Contributor trust"}
-on:
-  pull_request_target:   # write access for PRs from forks; never checks out PR code
-    types: [opened, reopened]
-permissions:
-  contents: read
-  pull-requests: write
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:`;
-  if (!vouch) return `${head}\n      - uses: ${uses()}`;
-  return `${head}
-      - id: trust
-        uses: ${uses()}
-        with:
-          dry-run: "true"   # decide only; Vouch labels and closes
-      - if: steps.trust.outputs.admitted != 'true'
-        uses: ${VOUCH_ACTION}
-        with:
-          pr-number: \${{ github.event.pull_request.number }}
-          auto-close: true
-        env:
-          GITHUB_TOKEN: \${{ github.token }}`;
-}
+  var dirRows = visible.map(function (l) {
+    var on = !!picked[l.ref];
+    return {
+      repo: l.repo, url: l.url, v: num(l.vouched), d: num(l.denounced), up: ago(l.updatedAt), on: on,
+      btn: on ? "In your rules" : "Add to rules",
+      btnBg: on ? "#10281B" : "transparent", btnFg: on ? "#7BE3A6" : "#F2F5F3", btnBd: on ? "#1A4A31" : "#343B37",
+      toggle: toggle(l.ref)
+    };
+  });
+  var pickedRefs = Object.keys(picked).filter(function (k) { return picked[k]; });
+  var pickedLine = pickedRefs.length === 1 ? "1 shared list is in your rules." : pickedRefs.length + " shared lists are in your rules.";
+  var buildLine = builtAt
+    ? "Last build: " + new Date(builtAt).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" }).replace(",", "")
+    : "";
 
-function trustYaml(state) {
-  const lines = [];
-  lines.push(state.ownList ? "own_list: auto            # .github/VOUCHED.td or VOUCHED.td" : "own_list: none");
-  const admit = [];
-  for (const ref of state.lists) admit.push(`  - list: ${ref}`);
-  for (const m of state.merged) admit.push(`  - merged: { repo: ${m.repo}, min: ${m.min}, within: 24mo }`);
-  if (state.self) admit.push(`  - merged: { repo: self, min: ${state.selfMin}, within: ${state.selfWithin} }`);
-  if (admit.length > 0) lines.push("admit:", ...admit);
-  if (state.docs) lines.push("exempt_paths:", '  - "docs/**"', '  - "**/*.md"');
-  if (!state.vouch) {
-    lines.push(`on_unknown: ${state.mode}`);
-    if (!state.comment) lines.push("comment: never            # still comments when closing");
+  /* ---------------------------------------------------------- builder */
+  var top = all.slice(0, 4).map(function (l) { return l.ref; });
+  var builderRefs = top.concat(pickedRefs.filter(function (r) { return top.indexOf(r) === -1; }));
+  if (!lists) builderRefs = pickedRefs;
+  function box(on) { return { boxBg: on ? "#35D07F" : "#080A09", boxBd: on ? "#35D07F" : "#848D88" }; }
+  var listItems = builderRefs.map(function (ref) {
+    var l = all.filter(function (x) { return x.ref === ref; })[0];
+    var on = !!picked[ref];
+    return Object.assign({ repo: ref, note: l ? num(l.vouched) + " vouched" : "shared list", on: on, toggle: toggle(ref) }, box(on));
+  });
+  listItems.push(Object.assign({
+    repo: "merged here", note: "1 merged pull request in this repo in the last 24 months", on: merged,
+    toggle: function () { set({ merged: !merged }); }
+  }, box(merged)));
+  var extras = [Object.assign({
+    repo: "docs and *.md", note: "anyone may change only docs/ or Markdown files", on: docs,
+    toggle: function () { set({ docs: !docs }); }
+  }, box(docs))];
+
+  function radio(on) { return on ? "#35D07F" : "#848D88"; }
+  var actions = [
+    { id: "label", label: "Label only" },
+    { id: "comment", label: "Label and explain how to get vouched" },
+    { id: "close", label: "Close with a comment" }
+  ].map(function (a) { return { label: a.label, on: unknown === a.id, boxBd: radio(unknown === a.id), pick: function () { set({ unknown: a.id }); } }; });
+  var denActions = [
+    { id: "label", label: "Label only" },
+    { id: "close", label: "Close the pull request" }
+  ].map(function (a) { return { label: a.label, on: den === a.id, boxBd: radio(den === a.id), pick: function () { set({ den: a.id }); } }; });
+
+  var lines = [];
+  var yamlText = "";
+  function flat(t) { lines.push({ text: t, flat: true, indent: false, comment: false }); yamlText += t + "\n"; }
+  function indent(t) { lines.push({ text: t, flat: false, indent: true, comment: false }); yamlText += "  " + t + "\n"; }
+  function comment(t) { lines.push({ text: t, flat: false, indent: false, comment: true }); yamlText += t + "\n"; }
+  flat("own_list: auto");
+  var admit = pickedRefs.map(function (r) { return "- list: " + r; });
+  if (merged) admit.push("- merged: { repo: self, within: 24mo }");
+  if (admit.length) { flat("admit:"); admit.forEach(indent); } else flat("admit: []");
+  if (docs) {
+    comment("# PRs touching only these: admitted");
+    flat("exempt_paths:");
+    indent('- "docs/**"');
+    indent('- "**/*.md"');
   }
-  return lines.join("\n");
-}
+  if (unknown === "close") comment("# unknown: closed, with a comment");
+  else if (unknown === "comment") comment("# unknown: told how to get vouched");
+  else comment("# unknown: labelled, nothing closed");
+  flat("on_unknown: " + (unknown === "close" ? "close" : "label"));
+  flat("on_denounced: " + den);
+  flat("comment: " + (unknown === "label" ? "never" : "unknown"));
 
-/* ---------- Builder ---------- */
-const builder = { lists: new Set(), merged: [] };
-let catalog = [];
+  var listA = builderRefs[0] || "ghostty-org/ghostty";
+  function vouchedOf(ref) { var l = all.filter(function (x) { return x.ref === ref; })[0]; return l ? l.vouched : 0; }
+  var listB = builderRefs.filter(function (r) { return r !== listA && !picked[r]; }).sort(function (a, b) { return vouchedOf(b) - vouchedOf(a); })[0] || builderRefs[1] || listA;
+  var none = "on no list you accept";
+  function outcome(kind) {
+    if (kind === "admitted") return "Stays open";
+    var close = kind === "denounced" ? den === "close" : unknown === "close";
+    if (close) return "Closed with a comment";
+    return unknown === "label" ? "Stays open" : "Open, comment posted";
+  }
+  var preview = [
+    { name: "hanne-vik", kind: "admitted", why: "on your own list" },
+    { name: "tomasz-wrobel", kind: picked[listA] ? "admitted" : "unknown", why: picked[listA] ? "vouched on " + listA : none },
+    { name: "ines-carvalho", kind: picked[listB] ? "admitted" : "unknown", why: picked[listB] ? "vouched on " + listB : none },
+    { name: "lena-park", kind: merged ? "admitted" : "unknown", why: merged ? "2 merged pull requests here" : "has merged work, but you don't count it" },
+    { name: "xk-9911", kind: "denounced", why: "denounced on your own list" },
+    { name: "mirelle-okafor", kind: docs ? "admitted" : "unknown", why: docs ? "first pull request, only fixes docs" : "first pull request, a docs fix" }
+  ].map(function (s) {
+    var out = outcome(s.kind);
+    return { name: s.name, why: s.why, t: TAG[s.kind], out: out, outFg: out.indexOf("Closed") === 0 ? "#FF8087" : "#A8B0AB" };
+  });
+  var hint = picked[listB]
+    ? "ines-carvalho is admitted because you accept " + listB + ". That is shared trust doing its job."
+    : "Tick " + listB + " and watch ines-carvalho turn green. That is shared trust doing its job.";
 
-function readForm() {
-  const form = $("#builder-form");
-  const data = new FormData(form);
+  /* ---------------------------------------------------------- presets */
+  var uNames = { label: "Label", comment: "Label and comment", close: "Close with comment" };
+  var presets = [
+    { name: "Watch", note: "Start here. Nothing is closed and nobody gets a comment.", u: "label", d: "label", docs: false },
+    { name: "Explain", note: "Tells newcomers how to get vouched. Still closes nothing.", u: "comment", d: "label", docs: false },
+    { name: "The defaults", note: "What you get with no trust.yml. Closes only people your own list denounces.", u: "comment", d: "close", docs: false },
+    { name: "Docs stay open", note: "Gates code, but anyone can fix documentation and translations.", u: "close", d: "close", docs: true },
+    { name: "Trusted only", note: "For projects buried in generated pull requests. Blocks newcomers until someone vouches.", u: "close", d: "close", docs: false }
+  ].map(function (p) {
+    var active = unknown === p.u && den === p.d && docs === p.docs;
+    var closes = p.u === "close";
+    return {
+      name: p.name, note: p.note,
+      uText: closes && p.docs ? "Close, except docs" : uNames[p.u],
+      uFg: closes ? "#FF8087" : "#F2F5F3", uW: closes ? 600 : 400,
+      dText: p.d === "close" ? "Close" : "Label",
+      dFg: p.d === "close" ? "#FF8087" : "#F2F5F3", dW: p.d === "close" ? 600 : 400,
+      btn: active ? "Loaded in builder" : "Load in builder",
+      btnBg: active ? "#10281B" : "transparent", btnFg: active ? "#7BE3A6" : "#F2F5F3", btnBd: active ? "#1A4A31" : "#343B37",
+      load: function () { set({ unknown: p.u, den: p.d, docs: p.docs }); }
+    };
+  });
+
+  /* ---------------------------------------------------------- results */
+  var r = RESULTS.filter(function (x) { return x.repo === proj; })[0] || RESULTS[0];
+  var resModes = RESULTS.map(function (x) {
+    var on = x.repo === r.repo;
+    return { label: x.repo.split("/")[1], on: on, bg: on ? "#F2F5F3" : "transparent", fg: on ? "#080A09" : "#A8B0AB", pick: function () { set({ proj: x.repo }); } };
+  });
+  var rest = r.unknown - r.uMerged;
+  var res = {
+    v: r.admitted, u: r.unknown, d: r.denounced, dMin: r.denounced ? "10px" : "0",
+    vT: num(r.admitted), uT: num(r.unknown), dT: num(r.denounced),
+    big: num(r.uMerged), bigFg: "#F2F5F3",
+    head: "of the " + num(r.unknown) + " unknown pull requests on " + r.repo + " were good, and got merged.",
+    body: "Their authors had no vouch and no merged work here yet, so most were newcomers. With closing switched on, every one of them would have waited for a vouch first. Of the other " + num(rest) + ", " +
+      num(r.uRejected) + " were rejected, " + num(r.uWithdrawn) + " withdrawn, " + num(r.uBot) + " closed by a bot and " + num(r.uOpen) + " are still open." +
+      (r.own ? "" : " This project has no VOUCHED.td, so only merged work admitted anyone; shared lists would let more people in."),
+    span: num(r.external) + " outside pull requests, 27 Nov 2025 to 27 Nov 2026"
+  };
+
   return {
-    ownList: data.has("ownList"),
-    vouch: data.has("vouch"),
-    self: data.has("self"),
-    selfMin: Math.max(1, Math.min(50, Number(data.get("selfMin")) || 1)),
-    selfWithin: data.get("selfWithin") || "24mo",
-    mode: data.get("mode") || "label",
-    comment: data.has("comment"),
-    docs: data.has("docs"),
-    lists: [...builder.lists],
-    merged: builder.merged,
+    people: people, ruleRows: ruleRows, result: TAG[ruleDefs[cur.hit].res],
+    tabs: tabs, isRules: file === "rules", isFlow: file === "flow", isCommit: file === "commit",
+    releaseRef: releaseRef, releaseTag: RELEASE.tag,
+    copyFile: copier(set, "file", fileText[file]), copyFileLabel: copyLabel("file", "Copy"),
+    listItems: listItems, extras: extras, dirRows: dirRows, pickedLine: pickedLine, buildLine: buildLine,
+    noRows: dirRows.length === 0, emptyLine: lists ? "No list matches “" + (st.filter || "") + "”." : "Loading lists…",
+    allLabel: showAll && !filter ? "Show fewer lists" : "Show all " + all.length + " public lists",
+    toggleAll: function () { set({ showAll: !st.showAll, filter: "" }); var f = document.getElementById("list-filter-v2"); if (f) f.value = ""; },
+    actions: actions, denActions: denActions, yamlLines: lines,
+    copyYaml: copier(set, "yaml", yamlText), copyYamlLabel: copyLabel("yaml", "Copy file"),
+    preview: preview, hint: hint, presets: presets, resModes: resModes, res: res,
+    copyCli: copier(set, "cli", "npx github:maxbenschop/pr-trust backtest you/your-repo"), copyCliLabel: copyLabel("cli", "Copy")
   };
 }
 
-function renderBuilder() {
-  const state = readForm();
-  setCode($("#out-trust"), trustYaml(state));
-  setCode($("#out-workflow"), workflowYaml({ vouch: state.vouch }));
-  $("#out-workflow-name").textContent = state.vouch ? ".github/workflows/vouch-check-pr.yml" : ".github/workflows/pr-trust.yml";
+var app = mount(document.getElementById("app"), view);
 
-  const form = $("#builder-form");
-  for (const el of $$('input[name="mode"], input[name="comment"]', form)) el.disabled = state.vouch;
-  for (const el of $$('input[name="selfMin"], select[name="selfWithin"]', form)) el.disabled = !state.self;
-
-  const notes = [];
-  if (state.vouch) notes.push("With Vouch, pr-trust only decides; Vouch's own step labels and closes, so the close and comment settings don't apply.");
-  else if (state.mode === "close") notes.push("Tip: start with “Label only” for a few weeks, then switch to closing.");
-  if (!state.ownList && !state.self && state.lists.length === 0 && state.merged.length === 0) {
-    notes.push("No rules yet: every outside author would be unknown.");
-  }
-  $("#builder-note").textContent = notes.join(" ");
-
-  $("#list-chips").replaceChildren(...state.lists.map((ref) => chip(ref, () => toggleList(ref, false))));
-  $("#merged-chips").replaceChildren(
-    ...state.merged.map((m) => chip(`${m.repo} ≥${m.min}`, () => {
-      builder.merged = builder.merged.filter((x) => x.repo !== m.repo);
-      renderBuilder();
-    })),
-  );
-  for (const button of $$(".add-btn")) {
-    const on = builder.lists.has(button.dataset.ref);
-    button.setAttribute("aria-pressed", String(on));
-    button.textContent = on ? "Added ✓" : "Add to my rules";
-  }
-}
-
-function chip(text, onRemove) {
-  const el = document.createElement("span");
-  el.className = "chip";
-  el.textContent = text;
-  const remove = document.createElement("button");
-  remove.type = "button";
-  remove.setAttribute("aria-label", `Remove ${text}`);
-  remove.textContent = "×";
-  remove.addEventListener("click", onRemove);
-  el.append(remove);
-  return el;
-}
-
-function toggleList(ref, on) {
-  if (on ?? !builder.lists.has(ref)) builder.lists.add(ref);
-  else builder.lists.delete(ref);
-  renderBuilder();
-}
-
-const REPO_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
-
-function addMerged(repo, min) {
-  repo = repo.trim();
-  if (!REPO_RE.test(repo)) {
-    toast("Use the form owner/repo");
-    return false;
-  }
-  builder.merged = builder.merged.filter((m) => m.repo.toLowerCase() !== repo.toLowerCase());
-  builder.merged.push({ repo, min: Math.max(1, Math.min(50, Number(min) || 1)) });
-  renderBuilder();
-  return true;
-}
-
-function setupBuilder() {
-  $("#builder-form").addEventListener("input", renderBuilder);
-  $("#builder-form").addEventListener("change", renderBuilder);
-
-  const search = $("#list-search");
-  const pick = () => {
-    const value = search.value.trim().toLowerCase();
-    const match = catalog.find((l) => l.ref.toLowerCase() === value || l.repo.toLowerCase() === value);
-    if (match) {
-      toggleList(match.ref, true);
-      search.value = "";
-    }
-  };
-  search.addEventListener("change", pick);
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      pick();
-    }
-  });
-
-  const repoInput = $("#merged-repo");
-  const add = () => {
-    if (addMerged(repoInput.value, $("#merged-min").value)) repoInput.value = "";
-  };
-  $("#merged-add").addEventListener("click", add);
-  repoInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      add();
-    }
-  });
-  $("#merged-suggest").replaceChildren(
-    ...TRACK_RECORD_SUGGESTIONS.map((repo) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.textContent = `+ ${repo}`;
-      b.addEventListener("click", () => addMerged(repo, $("#merged-min").value));
-      return b;
-    }),
-  );
-  renderBuilder();
-}
-
-/* ---------- Presets ---------- */
-const PRESETS = [
-  {
-    id: "label",
-    name: "Label only",
-    intro: "The safe start. Every outside PR gets a label and the reason; nothing is closed. Run it for a few weeks and see who lands in “unknown”.",
-    trust: `own_list: auto
-admit:
-  - merged: { repo: self, min: 1, within: 24mo }
-on_unknown: label`,
-    workflow: () => workflowYaml(),
-  },
-  {
-    id: "close",
-    name: "Comment and close",
-    intro: "For projects drowning in drive-by PRs. Unknown authors get your message and a closed PR; a maintainer can always reopen, and the check then only labels it.",
-    trust: `own_list: auto
-admit:
-  - merged: { repo: self, min: 1, within: 24mo }
-on_unknown: close
-on_denounced: close
-message_file: .github/trust-message.md   # placeholders: {author} {reason} {repo} {next}`,
-    workflow: () => workflowYaml(),
-  },
-  {
-    id: "vouch",
-    name: "Alongside Vouch",
-    intro: "Keep Vouch's check and messages. pr-trust runs first and lets in people your list doesn't know yet: vouched by projects you trust, or with a track record here.",
-    trust: `own_list: auto
-admit:
-  - list: ghostty-org/ghostty
-  - list: hyprwm/.github:vouch/VOUCHED.td
-  - merged: { repo: self, min: 1, within: 24mo }`,
-    workflow: () => workflowYaml({ vouch: true }),
-  },
-  {
-    id: "docs",
-    name: "Docs stay open",
-    intro: "Gate code, but keep documentation and translations open to everyone. Denounced authors are still blocked.",
-    trust: `own_list: auto
-admit:
-  - merged: { repo: self, min: 1, within: 24mo }
-exempt_paths:
-  - "docs/**"
-  - "**/*.md"
-  - "i18n/**"
-  - "locales/**"
-on_unknown: close`,
-    workflow: () => workflowYaml(),
-  },
-  {
-    id: "ecosystem",
-    name: "Ecosystem track record",
-    intro: "For libraries in a bigger ecosystem: admit people with merged work in the projects your users already trust, as well as your own contributors.",
-    trust: `own_list: auto
-admit:
-  - merged: { repo: rust-lang/rust, min: 3, within: 24mo }
-  - merged: { repo: rust-lang/cargo, min: 2, within: 24mo }
-  - merged: { repo: tokio-rs/tokio, min: 2, within: 24mo }
-  - merged: { repo: self, min: 1, within: 24mo }
-on_unknown: label`,
-    workflow: () => workflowYaml(),
-  },
-  {
-    id: "dispatch",
-    name: "Check on demand",
-    intro: "Run the check by hand on any PR from the Actions tab, without changing it. Handy for trying new rules before you rely on them.",
-    trust: `# Uses your existing .github/trust.yml`,
-    workflow: () => workflowYaml({ dispatch: true }),
-  },
-];
-
-function setupPresets() {
-  const tabs = $("#preset-tabs");
-  const panel = $("#preset-panel");
-  const show = (preset) => {
-    for (const tab of $$(".tab", tabs)) {
-      const on = tab.dataset.id === preset.id;
-      tab.setAttribute("aria-selected", String(on));
-      tab.tabIndex = on ? 0 : -1;
-    }
-    panel.setAttribute("aria-labelledby", `tab-${preset.id}`);
-    panel.innerHTML = `
-      <div class="preset-intro"><h3>${escapeHtml(preset.name)}</h3><p>${escapeHtml(preset.intro)}</p></div>
-      <div class="file"><div class="file-head"><span>.github/trust.yml</span><button class="copy-btn" type="button" data-copy-target="preset-trust">Copy</button></div><pre><code id="preset-trust"></code></pre></div>
-      <div class="file"><div class="file-head"><span>.github/workflows/${preset.id === "vouch" ? "vouch-check-pr" : "pr-trust"}.yml</span><button class="copy-btn" type="button" data-copy-target="preset-workflow">Copy</button></div><pre><code id="preset-workflow"></code></pre></div>`;
-    setCode($("#preset-trust"), preset.trust);
-    setCode($("#preset-workflow"), preset.workflow());
-  };
-  for (const preset of PRESETS) {
-    const tab = document.createElement("button");
-    tab.type = "button";
-    tab.className = "tab";
-    tab.id = `tab-${preset.id}`;
-    tab.role = "tab";
-    tab.dataset.id = preset.id;
-    tab.setAttribute("aria-controls", "preset-panel");
-    tab.textContent = preset.name;
-    tab.addEventListener("click", () => show(preset));
-    tab.addEventListener("keydown", (e) => {
-      const i = PRESETS.indexOf(preset);
-      const next = e.key === "ArrowRight" ? PRESETS[(i + 1) % PRESETS.length] : e.key === "ArrowLeft" ? PRESETS[(i - 1 + PRESETS.length) % PRESETS.length] : null;
-      if (next) {
-        show(next);
-        $(`#tab-${next.id}`).focus();
-      }
-    });
-    tabs.append(tab);
-  }
-  show(PRESETS[0]);
-}
-
-/* ---------- Directory ---------- */
-const fmt = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
-
-function timeAgo(iso) {
-  if (!iso) return "unknown";
-  const days = Math.floor((Date.now() - Date.parse(iso)) / 86_400_000);
-  if (days < 1) return "today";
-  if (days < 2) return "yesterday";
-  if (days < 45) return `${days} days ago`;
-  const months = Math.round(days / 30);
-  return months < 12 ? `${months} months ago` : `${Math.round(months / 12)} years ago`;
-}
-
-function renderDirectory() {
-  const grid = $("#dir-grid");
-  const query = $("#dir-search").value.trim().toLowerCase();
-  const sort = $("#dir-sort").value;
-  const items = catalog
-    .filter((l) => !query || [l.repo, l.description, l.language].some((v) => v && v.toLowerCase().includes(query)))
-    .sort((a, b) =>
-      sort === "vouched" ? b.vouched - a.vouched : sort === "updated" ? (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") : b.stars - a.stars,
-    );
-  if (items.length === 0) {
-    grid.innerHTML = `<p class="muted">No lists match “${escapeHtml(query)}”.</p>`;
-    return;
-  }
-  grid.innerHTML = items
-    .map(
-      (l) => `
-    <article class="list-card">
-      <h3><a href="${escapeHtml(l.url)}">${escapeHtml(l.repo)}</a></h3>
-      <p class="desc">${escapeHtml(l.description ?? "")}</p>
-      <div class="meta">
-        <span><b>${l.vouched}</b> vouched</span>
-        <span>★ ${fmt.format(l.stars)}</span>
-        ${l.language ? `<span>${escapeHtml(l.language)}</span>` : ""}
-        <span>updated ${timeAgo(l.updatedAt)}</span>
-      </div>
-      <div class="row">
-        <code>list: ${escapeHtml(l.ref)}</code>
-        <button type="button" class="add-btn" data-ref="${escapeHtml(l.ref)}" aria-pressed="false">Add to my rules</button>
-      </div>
-    </article>`,
-    )
-    .join("");
-  renderBuilder();
-}
-
-async function setupDirectory() {
-  $("#dir-search").addEventListener("input", renderDirectory);
-  $("#dir-sort").addEventListener("change", renderDirectory);
-  $("#dir-grid").addEventListener("click", (e) => {
-    const button = e.target.closest(".add-btn");
-    if (!button) return;
-    toggleList(button.dataset.ref);
-    if (builder.lists.has(button.dataset.ref)) toast("Added to the rule builder");
-  });
-  try {
-    const response = await fetch("lists.json", { cache: "no-cache" });
-    const data = await response.json();
-    catalog = data.lists ?? [];
-    const total = catalog.reduce((sum, l) => sum + l.vouched, 0);
-    $("#dir-meta").textContent = `${catalog.length} lists vouching for ${total.toLocaleString("en")} people in total. Refreshed ${timeAgo(data.generatedAt)}.`;
-    $("#list-options").replaceChildren(
-      ...catalog.map((l) => {
-        const o = document.createElement("option");
-        o.value = l.ref;
-        o.label = `${l.repo} · ${l.vouched} vouched`;
-        return o;
-      }),
-    );
-    renderDirectory();
-  } catch {
-    $("#dir-grid").innerHTML = '<p class="muted">Could not load the directory. See <a href="https://github.com/maxbenschop/pr-trust/blob/main/lists/catalog.json">lists/catalog.json</a>.</p>';
-  }
-}
-
-/* ---------- Results ---------- */
-function setupResults() {
-  const bar = (value, warn) => `<span class="bar${warn ? " warn" : ""}">${value}%<i style="width:${Math.round(value * 0.6)}px"></i></span>`;
-  $("#results-table tbody").innerHTML = RESULTS.map(
-    (r) => `<tr>
-      <td class="repo">${escapeHtml(r.repo)}${r.vouch ? '<span class="tag">uses Vouch</span>' : ""}</td>
-      <td class="num">${r.external.toLocaleString("en")}</td>
-      <td class="num">${bar(r.keeps, r.keeps < 50)}</td>
-      <td class="num">${bar(r.stops)}</td>
-      <td class="num">${r.through}%</td>
-      <td class="num">${r.blocked}%</td>
-    </tr>`,
-  ).join("");
-}
-
-/* ---------- Init ---------- */
-setCode($(".js-workflow-basic"), workflowYaml());
-setupTheme();
-setupCopy();
-setupBuilder();
-setupPresets();
-setupResults();
-setupDirectory();
+fetch("lists.json")
+  .then(function (r) { return r.json(); })
+  .then(function (data) {
+    lists = data.lists || [];
+    builtAt = data.generatedAt;
+    app.render();
+  })
+  .catch(function () { lists = []; app.render(); });

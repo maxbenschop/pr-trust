@@ -9749,7 +9749,9 @@ var DEFAULT_MESSAGE = `Thanks for opening this pull request, @{author}.
 
 This project accepts pull requests from contributors it already trusts, and this check could not confirm that for your account ({reason}).
 
-{next}`;
+{next}
+
+[What this label means, and how to get vouched](https://maxbenschop.github.io/pr-trust/contributors/)`;
 async function loadMessage(gh, repo, config, warnings) {
   if (!config.messageFile) return DEFAULT_MESSAGE;
   const found = await readFirstFile(gh, repo, [config.messageFile]);

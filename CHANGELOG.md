@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- The comment left on unknown pull requests links to a new page for contributors explaining
+  the labels and how to get vouched: https://maxbenschop.github.io/pr-trust/contributors/
+- New website design, with real backtest results for ten projects and the live trust list
+  directory wired into the rule builder.
+
 ## 0.1.0 (2026-11-27)
 
 - GitHub Action: checks PR authors against `.github/trust.yml`, labels the PR, and can
