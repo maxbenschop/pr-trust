@@ -1,0 +1,41 @@
+# Rules are checked in this order; the first match admits the PR author.
+# Collaborators with write access and bots are never checked.
+
+# This project's own Vouch list. "auto" looks for .github/VOUCHED.td, then VOUCHED.td.
+# It is the only list whose denouncements count.
+own_list: auto
+
+admit:
+  # Anyone vouched for in another project's list (vouches only; its denouncements are ignored).
+  - list: ghostty-org/ghostty
+  # A list stored somewhere other than the usual places.
+  - list: hyprwm/.github:vouch/VOUCHED.td
+  # A track record in a project you trust.
+  - merged: { repo: rust-lang/rust, min: 3, within: 24mo }
+  # A track record in this project.
+  - merged: { repo: self, min: 1, within: 24mo }
+
+# PRs that change only these paths skip the check (denounced authors are still blocked).
+exempt_paths:
+  - "docs/**"
+  - "**/*.md"
+
+# What to do with authors no rule admits, and with denounced authors: label, or close
+# with a comment. A maintainer reopening a closed PR is respected: it is only labelled.
+# The backtest ignores everything from here down.
+on_unknown: label
+on_denounced: close
+
+# Comment on PRs from unadmitted authors ("unknown"), or only when closing ("never").
+comment: unknown
+
+# Your own message, read from the default branch. Placeholders: {author}, {reason},
+# {repo}, and {next} (what happens next: closed or waiting for review).
+message_file: .github/trust-message.md
+
+# Label names; set one to "" to turn it off.
+labels:
+  admitted: "trust: admitted"
+  unknown: "trust: unknown"
+  denounced: "trust: denounced"
+  error: "trust: check failed"

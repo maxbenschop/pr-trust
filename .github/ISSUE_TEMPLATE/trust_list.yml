@@ -1,0 +1,32 @@
+name: Suggest a trust list
+description: Add a project's Vouch list to the directory on the website.
+title: "List: "
+labels: [trust-list]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The directory lists public Vouch lists that projects maintain themselves. It is a
+        directory, not an endorsement.
+  - type: input
+    id: repo
+    attributes:
+      label: Repository
+      description: owner/repo, plus `:path` if the list is not at `.github/VOUCHED.td` or `VOUCHED.td`.
+      placeholder: ghostty-org/ghostty
+    validations:
+      required: true
+  - type: input
+    id: policy
+    attributes:
+      label: How people get vouched
+      description: A link to where the project explains its vouching policy.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirm
+      options:
+        - label: I maintain this project, or the list is public and the project is active.
+          required: true

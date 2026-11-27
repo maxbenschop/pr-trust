@@ -1,0 +1,5 @@
+# Rules for this repository's own contributor check.
+own_list: auto
+admit:
+  - merged: { repo: self, min: 1, within: 24mo }
+on_unknown: label

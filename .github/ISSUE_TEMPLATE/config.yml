@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and introductions
+    url: https://github.com/maxbenschop/pr-trust/discussions
+    about: Ask how to set it up, or introduce yourself to get vouched.
+  - name: Report a security problem
+    url: https://github.com/maxbenschop/pr-trust/security/advisories/new
+    about: Please report vulnerabilities privately.

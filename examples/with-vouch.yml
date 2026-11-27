@@ -1,0 +1,29 @@
+# .github/workflows/vouch-check-pr.yml
+# Keep Vouch's existing check and its messages; let pr-trust admit people Vouch's list
+# does not know yet (vouched elsewhere, or a track record in projects you trust).
+name: Vouch check
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - id: trust
+        uses: maxbenschop/pr-trust@COMMIT_SHA # v0.1.0
+        with:
+          dry-run: "true" # decide only; Vouch does the labelling and closing
+
+      - if: steps.trust.outputs.admitted != 'true'
+        uses: mitchellh/vouch/action/check-pr@d66fa29a64600490892131ad87597c30c91fcac4 # v1
+        with:
+          pr-number: ${{ github.event.pull_request.number }}
+          auto-close: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

@@ -1,0 +1,37 @@
+name: PR Trust
+description: Check pull request authors against contributor-trust rules, with Vouch list support.
+author: maxbenschop
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  github-token:
+    description: Token used to read rules and trust lists and to label, comment on and close the PR.
+    default: ${{ github.token }}
+  config:
+    description: Path of the rules file, read from the default branch.
+    default: .github/trust.yml
+  dry-run:
+    description: Decide and report, but change nothing on the pull request.
+    default: "false"
+  pr-number:
+    description: Check this pull request instead of the one in the triggering event.
+    default: ""
+  fail-on-error:
+    description: Fail the job when the check itself fails. The PR is never closed on an error either way.
+    default: "false"
+
+outputs:
+  status:
+    description: admitted, exempt, unknown, denounced, skipped (maintainer, bot or closed PR) or error.
+  admitted:
+    description: '"true" when the author may proceed (admitted, exempt or skipped).'
+  reason:
+    description: One line explaining the result.
+  rule:
+    description: The rule that admitted the author, if any.
+
+runs:
+  using: node24
+  main: dist/index.cjs

@@ -1,0 +1,52 @@
+{
+  "name": "pr-trust",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Contributor trust checks for GitHub pull requests: a GitHub Action, plus tools to try rules on any PR and backtest them on a year of history.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "backtest": "node src/cli/backtest.ts",
+    "check": "node src/cli/check.ts",
+    "build": "esbuild src/action/main.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/index.cjs && esbuild src/cli/main.ts --bundle --platform=node --target=node22 --format=esm --banner:js=\"#!/usr/bin/env node\nimport { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=dist/cli.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc",
+    "lists": "node scripts/build-lists.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.11",
+    "@types/picomatch": "^4.0.3",
+    "esbuild": "^0.28.2",
+    "picomatch": "^4.0.7",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.2",
+    "yaml": "^2.9.1"
+  },
+  "packageManager": "pnpm@10.7.0",
+  "homepage": "https://maxbenschop.github.io/pr-trust/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/maxbenschop/pr-trust.git"
+  },
+  "bugs": "https://github.com/maxbenschop/pr-trust/issues",
+  "keywords": [
+    "github-action",
+    "pull-requests",
+    "vouch",
+    "open-source",
+    "maintainers",
+    "contributor-trust"
+  ],
+  "bin": {
+    "pr-trust": "dist/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "action.yml",
+    "README.md",
+    "LICENSE"
+  ]
+}

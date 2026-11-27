@@ -1,0 +1,70 @@
+[
+  {
+    "repo": "ghostty-org/ghostty"
+  },
+  {
+    "repo": "mitchellh/vouch"
+  },
+  {
+    "repo": "netbox-community/netbox"
+  },
+  {
+    "repo": "cloudflare/workers-sdk"
+  },
+  {
+    "repo": "juanfont/headscale"
+  },
+  {
+    "repo": "triggerdotdev/trigger.dev"
+  },
+  {
+    "repo": "hyprwm/.github",
+    "path": "vouch/VOUCHED.td",
+    "project": "hyprwm/Hyprland"
+  },
+  {
+    "repo": "frappe/frappe"
+  },
+  {
+    "repo": "frappe/erpnext"
+  },
+  {
+    "repo": "huggingface/kernels"
+  },
+  {
+    "repo": "DIYgod/RSSHub"
+  },
+  {
+    "repo": "mem0ai/mem0"
+  },
+  {
+    "repo": "hatchet-dev/hatchet"
+  },
+  {
+    "repo": "slatedb/slatedb"
+  },
+  {
+    "repo": "medplum/medplum"
+  },
+  {
+    "repo": "golemcloud/golem"
+  },
+  {
+    "repo": "emmett-framework/granian"
+  },
+  {
+    "repo": "solidtime-io/solidtime"
+  },
+  {
+    "repo": "mainsail-crew/mainsail"
+  },
+  {
+    "repo": "ClickHouse/ClickStack"
+  },
+  {
+    "repo": "humanlayer/humanlayer"
+  },
+  {
+    "repo": "atuinsh/atuin"
+  }
+]

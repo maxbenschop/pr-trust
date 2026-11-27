@@ -1,0 +1,35 @@
+name: Bug report
+description: The Action, check or backtest did something wrong.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Your rules and workflow
+      description: Your `.github/trust.yml` and the workflow step that runs the Action.
+      render: yaml
+  - type: input
+    id: pr
+    attributes:
+      label: Pull request or run
+      description: A link to the PR or workflow run where it happened, if public.
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The job log or `pnpm check` output. Remove anything private.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The release or commit you use.
+    validations:
+      required: true
