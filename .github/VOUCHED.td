@@ -2,3 +2,4 @@
 # (https://github.com/mitchellh/vouch). Maintainers with write access never need an entry.
 # To be added, introduce yourself in an issue or discussion.
 github:maxbenschop
+github:octocat
