@@ -98,12 +98,12 @@ export function addVouch(text: string | null, login: string): AddVouchResult {
   if (lines.at(-1) === "") lines.pop(); // the trailing newline
 
   // Every entry line and its username, whatever its platform, as Vouch sorts them.
-  const entries: { index: number; username: string; prefixed: boolean }[] = [];
+  const entries: { index: number; username: string }[] = [];
   lines.forEach((raw, index) => {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) return;
     const handle = line.replace(/^[-+]/, "").trim().split(/\s+/, 1)[0] ?? "";
-    entries.push({ index, username: handle.slice(handle.indexOf(":") + 1).toLowerCase(), prefixed: handle.toLowerCase().startsWith("github:") });
+    entries.push({ index, username: handle.slice(handle.indexOf(":") + 1).toLowerCase() });
   });
 
   let at: number;
@@ -113,8 +113,21 @@ export function addVouch(text: string | null, login: string): AddVouchResult {
   else if (sorted && after) at = after.index;
   else at = entries.at(-1)!.index + 1;
 
-  // Keep the file's own style: "github:login" when every existing entry is written that way.
-  const prefixed = entries.length > 0 && entries.every((e) => e.prefixed);
-  lines.splice(at, 0, prefixed ? `github:${key}` : key);
+  lines.splice(at, 0, vouchEntry(text, login));
   return { result: "added", text: lines.join(eol) + eol };
+}
+
+/**
+ * The line `addVouch` writes for `login` into a list's text (`null`: no list yet): the
+ * lowercased login, with the `github:` prefix when every existing entry is written that way.
+ */
+export function vouchEntry(text: string | null, login: string): string {
+  const key = login.toLowerCase();
+  if (text === null) return key;
+  const handles = text
+    .split(/\r?\n/)
+    .map((raw) => raw.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .map((line) => (line.replace(/^[-+]/, "").trim().split(/\s+/, 1)[0] ?? "").toLowerCase());
+  return handles.length > 0 && handles.every((h) => h.startsWith("github:")) ? `github:${key}` : key;
 }

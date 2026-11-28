@@ -208,4 +208,12 @@ describe("addVouch style", () => {
     expect(addVouch("# list\ngithub:zed\n", "Alice")).toEqual({ result: "added", text: "# list\ngithub:alice\ngithub:zed\n" });
     expect(addVouch("github:zed\nbob\n", "alice")).toMatchObject({ result: "added", text: "github:zed\nbob\nalice\n" });
   });
+
+  it("names the exact line it adds", async () => {
+    const { vouchEntry } = await import("../src/engine/vouchfile.ts");
+    expect(vouchEntry(null, "NewBie")).toBe("newbie");
+    expect(vouchEntry("# list\ngithub:zed\n-github:bad spam\n", "NewBie")).toBe("github:newbie");
+    expect(vouchEntry("github:zed\nbob\n", "NewBie")).toBe("newbie");
+    expect(vouchEntry("# only comments\n", "NewBie")).toBe("newbie");
+  });
 });

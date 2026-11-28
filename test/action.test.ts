@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { asAuthor, COMMENT_MARKER, DEFAULT_MESSAGE, describeWaysToPass, planActions, renderMessage, runCheck, type PullRequestInfo } from "../src/action/check.ts";
 import { FALLBACK_MAX_PAGES } from "../src/action/live.ts";
 import { summaryMarkdown } from "../src/action/report.ts";
-import { handleComment, parseVouchCommand, type CommentEvent } from "../src/action/vouch.ts";
+import { handleComment, isRuleViolation, oneLine, parseVouchCommand, type CommentEvent } from "../src/action/vouch.ts";
+import { handlePush, pushTouches, type PushEvent } from "../src/action/recheck.ts";
 import { NEW_VOUCH_FILE_HEADER } from "../src/engine/vouchfile.ts";
 import { parseConfig } from "../src/engine/config.ts";
-import type { GitHubClient, RestResponse } from "../src/github/client.ts";
+import { GitHubError, type GitHubClient, type RestResponse } from "../src/github/client.ts";
 
 type Call = { method: string; path: string; body?: unknown };
 
@@ -24,6 +25,12 @@ function fakeGitHub(world: {
   users?: Record<string, string>; // existing accounts: login -> type
   pulls?: Record<number, Record<string, unknown>>;
   putStatus?: number; // every contents write fails with this status
+  putMessage?: string; // ...and this message
+  protectedDefault?: boolean; // writes to the default branch are refused by a ruleset
+  branches?: string[]; // branches other than the default that already exist
+  openPulls?: { number: number; head?: { ref: string }; labels?: { name: string }[] }[]; // newest first
+  createPull?: { status: number; message: string }; // opening a pull request fails like this
+  failPulls?: number[]; // reading these pull requests throws
   concurrentEdit?: string; // a line another commit adds just before our first write
   staleReads?: boolean; // GraphQL keeps returning files as they were before any write
 }) {
@@ -34,6 +41,7 @@ function fakeGitHub(world: {
   const shas = new Map<string, number>();
   const sha = (key: string) => `sha-${key}-${shas.get(key) ?? 0}`;
   let concurrentEdit = world.concurrentEdit;
+  const branches = new Set(world.branches ?? []);
   const gh: GitHubClient = {
     stats: { requests: 0, cached: 0 },
     async graphql<T>(query: string, variables: Record<string, unknown> = {}) {
@@ -72,15 +80,17 @@ function fakeGitHub(world: {
         const login = decodeURIComponent(/collaborators\/([^/]+)/.exec(path)![1]!);
         return { status: 200, data: { permission: world.permissions?.[login] ?? world.permission ?? "read" } as T };
       }
-      const contents = /^\/repos\/([^/]+\/[^/]+)\/contents\/(.+)$/.exec(path);
+      const contents = /^\/repos\/([^/]+\/[^/]+)\/contents\/([^?]+)(?:\?ref=(.+))?$/.exec(path);
       if (contents) {
-        const key = `${contents[1]}:${contents[2]!.split("/").map(decodeURIComponent).join("/")}`;
+        const branch = contents[3] ? decodeURIComponent(contents[3]) : (body as { branch?: string } | undefined)?.branch;
+        const key = `${contents[1]}${branch ? `@${branch}` : ""}:${contents[2]!.split("/").map(decodeURIComponent).join("/")}`;
         if (method === "GET") {
           const text = files[key];
           if (text === undefined) return { status: 404, data: { message: "Not Found" } as T };
           return { status: 200, data: { type: "file", sha: sha(key), encoding: "base64", content: Buffer.from(text).toString("base64") } as T };
         }
-        if (world.putStatus) return { status: world.putStatus, data: { message: "Resource not accessible by integration" } as T };
+        if (world.putStatus) return { status: world.putStatus, data: { message: world.putMessage ?? "Resource not accessible by integration" } as T };
+        if (world.protectedDefault && !branch) return { status: 409, data: { message: RULE_VIOLATION } as T };
         if (concurrentEdit !== undefined) {
           files[key] = `${files[key] ?? ""}${concurrentEdit}\n`;
           shas.set(key, (shas.get(key) ?? 0) + 1);
@@ -99,7 +109,39 @@ function fakeGitHub(world: {
         const found = Object.entries(world.users ?? {}).find(([l]) => l.toLowerCase() === login.toLowerCase());
         return found ? { status: 200, data: { login: found[0], type: found[1] } as T } : { status: 404, data: null as T };
       }
+      if (method === "GET" && path === "/repos/me/repo") return { status: 200, data: { default_branch: "main" } as T };
+      if (method === "GET" && path === "/repos/me/repo/git/ref/heads/main") return { status: 200, data: { object: { sha: "main-sha" } } as T };
+      const ref = /\/git\/refs(?:\/heads\/(.+))?$/.exec(path);
+      if (ref) {
+        const name = ref[1] ?? (body as { ref: string }).ref.replace("refs/heads/", "");
+        if (method === "DELETE") {
+          branches.delete(name);
+          return { status: 204, data: null as T };
+        }
+        if (method === "POST" && branches.has(name)) return { status: 422, data: { message: "Reference already exists" } as T };
+        branches.add(name);
+        for (const [key, text] of Object.entries(files)) {
+          const [repo, file] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+          if (!repo.includes("@")) files[`${repo}@${name}:${file}`] = text;
+        }
+        return { status: method === "POST" ? 201 : 200, data: {} as T };
+      }
+      if (path.startsWith("/repos/me/repo/pulls?")) {
+        const query = new URLSearchParams(path.slice(path.indexOf("?") + 1));
+        if (method === "POST") throw new Error("unexpected");
+        const head = query.get("head");
+        const open = world.openPulls ?? [];
+        if (head) return { status: 200, data: open.filter((p) => `me:${p.head?.ref}` === head) as T };
+        const page = Number(query.get("page") ?? 1);
+        const per = Number(query.get("per_page") ?? 30);
+        return { status: 200, data: open.slice((page - 1) * per, page * per) as T };
+      }
+      if (method === "POST" && path === "/repos/me/repo/pulls") {
+        if (world.createPull) return { status: world.createPull.status, data: { message: world.createPull.message } as T };
+        return { status: 201, data: { number: 50 } as T };
+      }
       const pull = /\/pulls\/(\d+)$/.exec(path);
+      if (method === "GET" && pull && world.failPulls?.includes(Number(pull[1]))) throw new Error("GitHub API GET returned 502");
       if (method === "GET" && pull) return { status: 200, data: world.pulls?.[Number(pull[1])] as T };
       if (method === "GET" && path.includes("/labels/")) return { status: 404, data: null as T };
       if (method === "GET" && path.includes("/comments")) return { status: 200, data: (world.comments ?? []) as T };
@@ -107,8 +149,11 @@ function fakeGitHub(world: {
     },
   };
   const writes = () => calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path.replace("/repos/me/repo", "")}`);
-  return { gh, calls, writes, graphqlCalls, files };
+  return { gh, calls, writes, graphqlCalls, files, branches };
 }
+
+/** What GitHub really answered to a Contents API write on a branch a ruleset protects. */
+const RULE_VIOLATION = "Repository rule violations found\n\nChanges must be made through a pull request.\n\n2 of 2 required status checks are expected.\n\n";
 
 const pr = (overrides: Partial<PullRequestInfo> = {}): PullRequestInfo => ({
   repo: "me/repo",
@@ -534,10 +579,114 @@ describe("handleComment", () => {
     expect(replies(calls)[0]).toContain("`permissions: contents: write`");
     expect(replies(calls)[0]).toContain("add the line `newbie` to `.github/VOUCHED.td`");
 
-    const blocked = world({ putStatus: 409 });
-    expect((await run(blocked.gh, event())).outcome).toBe("failed");
-    expect(blocked.calls.filter((c) => c.method === "PUT")).toHaveLength(2);
-    expect(replies(blocked.calls)[0]).toContain("If the default branch is protected");
+    const conflict = world({ putStatus: 409, putMessage: "is at 1234 but expected 5678" });
+    expect((await run(conflict.gh, event())).outcome).toBe("failed");
+    expect(conflict.calls.filter((c) => c.method === "PUT")).toHaveLength(2); // a real conflict: one retry
+    expect(conflict.calls.some((c) => c.path.includes("/git/") || c.path.includes("/pulls"))).toBe(false);
+    expect(replies(conflict.calls)[0]).toContain("The list kept changing");
+  });
+
+  it("suggests the exact line it would have added, in one paragraph", async () => {
+    const { gh, calls } = world({
+      putStatus: 403,
+      putMessage: "Resource not accessible\n\nby integration",
+      files: { "me/repo:.github/VOUCHED.td": "github:alice\ngithub:zed\n" },
+    });
+    expect((await run(gh, event())).outcome).toBe("failed");
+    const text = replies(calls)[0]!;
+    expect(text).toContain("add the line `github:newbie` to `.github/VOUCHED.td`");
+    expect(text).toContain("(GitHub said: 403 Resource not accessible. by integration)");
+    expect(text).not.toContain("\n");
+  });
+
+  describe("on a default branch that only takes pull requests", () => {
+    const protectedWorld = (extra: Parameters<typeof fakeGitHub>[0] = {}) =>
+      world({ protectedDefault: true, ...extra, files: { "me/repo:.github/VOUCHED.td": "github:alice\ngithub:zed\n", ...extra.files } });
+
+    it("opens a pull request with the one-line change instead, without a pointless retry", async () => {
+      const { gh, calls, writes, files, branches } = protectedWorld();
+      const result = await run(gh, event());
+      expect(result).toMatchObject({ outcome: "proposed", check: null });
+      expect(result.reason).toContain("opened pull request #50");
+      expect(writes()).toEqual([
+        "PUT /contents/.github/VOUCHED.td", // refused once, not retried
+        "POST /git/refs",
+        "PUT /contents/.github/VOUCHED.td",
+        "POST /pulls",
+        "POST /issues/7/comments",
+      ]);
+      const [, ref, put, pull] = calls.filter((c) => c.method !== "GET");
+      expect(ref!.body).toEqual({ ref: "refs/heads/pr-trust/vouch-newbie", sha: "main-sha" });
+      expect((put!.body as { branch?: string }).branch).toBe("pr-trust/vouch-newbie");
+      expect(files["me/repo:.github/VOUCHED.td"]).toBe("github:alice\ngithub:zed\n"); // default branch untouched
+      expect(files["me/repo@pr-trust/vouch-newbie:.github/VOUCHED.td"]).toBe("github:alice\ngithub:newbie\ngithub:zed\n");
+      expect(branches.has("pr-trust/vouch-newbie")).toBe(true);
+      const body = pull!.body as { title: string; head: string; base: string; body: string };
+      expect(body).toMatchObject({ title: "Vouch for @NewBie", head: "pr-trust/vouch-newbie", base: "main" });
+      expect(body.body).toContain("@maint asked for this with `/vouch` in #7");
+      expect(body.body).toContain("does not start other workflows");
+      expect(replies(calls)).toEqual([
+        "@maint The default branch only takes changes through pull requests, so I opened #50 to add `github:newbie` to `.github/VOUCHED.td`. Merge it to finish.",
+      ]);
+    });
+
+    it("links the pull request already open for the same account instead of opening another", async () => {
+      const { gh, calls, writes } = protectedWorld({ openPulls: [{ number: 42, head: { ref: "pr-trust/vouch-newbie" } }] });
+      const result = await run(gh, event());
+      expect(result.outcome).toBe("proposed");
+      expect(writes()).toEqual(["PUT /contents/.github/VOUCHED.td", "POST /issues/7/comments"]);
+      expect(replies(calls)[0]).toContain("#42 to vouch for `NewBie` is already open. Merge it to finish.");
+    });
+
+    it("reuses a branch left over from an earlier proposal", async () => {
+      const { gh, writes, branches } = protectedWorld({ branches: ["pr-trust/vouch-newbie"] });
+      expect((await run(gh, event())).outcome).toBe("proposed");
+      expect(writes()).toEqual([
+        "PUT /contents/.github/VOUCHED.td",
+        "POST /git/refs",
+        "PATCH /git/refs/heads/pr-trust/vouch-newbie",
+        "PUT /contents/.github/VOUCHED.td",
+        "POST /pulls",
+        "POST /issues/7/comments",
+      ]);
+      expect(branches.has("pr-trust/vouch-newbie")).toBe(true);
+    });
+
+    it("deletes its branch and explains the setting when it may not open pull requests", async () => {
+      const { gh, calls, writes, branches } = protectedWorld({
+        createPull: { status: 403, message: "GitHub Actions is not permitted to create or approve pull requests." },
+      });
+      const result = await run(gh, event());
+      expect(result.outcome).toBe("failed");
+      expect(writes()).toEqual([
+        "PUT /contents/.github/VOUCHED.td",
+        "POST /git/refs",
+        "PUT /contents/.github/VOUCHED.td",
+        "POST /pulls",
+        "DELETE /git/refs/heads/pr-trust/vouch-newbie",
+        "POST /issues/7/comments",
+      ]);
+      expect(branches.has("pr-trust/vouch-newbie")).toBe(false);
+      const text = replies(calls)[0]!;
+      expect(text).not.toContain("\n");
+      expect(text).toContain("(GitHub said: 403 GitHub Actions is not permitted to create or approve pull requests.)");
+      expect(text).toContain('"Allow GitHub Actions to create and approve pull requests"');
+      expect(text).toContain("add the line `github:newbie` to `.github/VOUCHED.td` in a pull request yourself");
+      // The pull request the command was posted on is never changed.
+      expect(calls.some((c) => c.method !== "GET" && (c.path.includes("/pulls/7") || c.path.includes("/issues/7/labels")))).toBe(false);
+    });
+  });
+
+  it("tells rule violations apart from conflicts and flattens GitHub's messages", () => {
+    const err = (status: number, message: string) => new GitHubError(`${status} ${oneLine(message)}`, status);
+    expect(isRuleViolation(err(409, RULE_VIOLATION))).toBe(true);
+    expect(isRuleViolation(err(409, "Changes must be made through a pull request."))).toBe(true);
+    expect(isRuleViolation(err(422, "Protected branch update failed for refs/heads/main."))).toBe(true);
+    expect(isRuleViolation(err(409, "is at 1234 but expected 5678"))).toBe(false);
+    expect(isRuleViolation(err(403, "Resource not accessible by integration"))).toBe(false);
+    expect(isRuleViolation(err(404, "Changes must be made through a pull request."))).toBe(false);
+    expect(oneLine(RULE_VIOLATION)).toBe("Repository rule violations found. Changes must be made through a pull request. 2 of 2 required status checks are expected.");
+    expect(oneLine("a `b`\nc")).toBe("a 'b'. c");
   });
 
   it("writes nothing in a dry run", async () => {
@@ -546,5 +695,93 @@ describe("handleComment", () => {
     expect(result).toMatchObject({ outcome: "vouched", reason: expect.stringContaining("would add NewBie") });
     expect(result.check?.status).toBe("admitted");
     expect(writes()).toEqual([]);
+  });
+});
+
+describe("handlePush", () => {
+  const pull = (number: number, author: string, labels: string[] = ["trust: unknown"]) => ({
+    number, state: "open", user: { login: author, type: "User" }, author_association: "NONE",
+    labels: labels.map((name) => ({ name })), changed_files: 1,
+  });
+  const pulls = [pull(9, "newbie"), pull(8, "stranger"), pull(6, "other", ["trust: admitted"]), pull(5, "newbie-two")];
+  const world = (extra: Parameters<typeof fakeGitHub>[0] = {}) =>
+    fakeGitHub({
+      openPulls: pulls,
+      pulls: Object.fromEntries(pulls.map((p) => [p.number, p])),
+      ...extra,
+      files: {
+        "me/repo:.github/trust.yml": "own_list: auto\non_unknown: close\n",
+        "me/repo:.github/VOUCHED.td": "alice\nnewbie\nnewbie-two\n",
+        ...extra.files,
+      },
+    });
+  const push = (overrides: Partial<PushEvent> = {}): PushEvent => ({
+    ref: "refs/heads/main",
+    repository: { default_branch: "main" },
+    commits: [{ added: [], modified: [".github/VOUCHED.td"], removed: [] }],
+    sender: { login: "maint" },
+    ...overrides,
+  });
+  const run = (gh: GitHubClient, e: PushEvent, max?: number) =>
+    handlePush(gh, { repo: "me/repo", event: e, configPath: ".github/trust.yml", dryRun: false, max });
+
+  it("checks open pull requests labelled unknown again, updating only those now admitted", async () => {
+    const { gh, calls, writes } = world();
+    const result = await run(gh, push());
+    expect(result.outcome).toBe("rechecked");
+    expect(result.checks.map((c) => [c.number, c.result.status])).toEqual([[9, "admitted"], [8, "unknown"], [5, "admitted"]]);
+    expect(result.reason).toContain("checked 3 pull requests");
+    expect(result.reason).toContain("2 now admitted");
+    expect(calls.some((c) => c.path.endsWith("/pulls/6"))).toBe(false); // not labelled unknown
+    expect(writes()).toEqual([
+      "DELETE /issues/9/labels/trust%3A%20unknown", "POST /labels", "POST /issues/9/labels",
+      "DELETE /issues/5/labels/trust%3A%20unknown", "POST /labels", "POST /issues/5/labels",
+    ]);
+    // The one still unknown is left alone: on_unknown is close, yet nothing is written to #8.
+    expect(writes().some((w) => w.includes("/8"))).toBe(false);
+  });
+
+  it("checks at most the newest few and warns about the rest", async () => {
+    const { gh } = world();
+    const result = await run(gh, push(), 2);
+    expect(result.checks.map((c) => c.number)).toEqual([9, 8]);
+    expect(result.warnings).toContain('More than 2 open pull requests are labelled "trust: unknown"; only the newest 2 were checked again.');
+  });
+
+  it("keeps going when one pull request cannot be checked", async () => {
+    const { gh, writes } = world({ failPulls: [9] });
+    const result = await run(gh, push());
+    expect(result.failed).toEqual([{ number: 9, error: "GitHub API GET returned 502" }]);
+    expect(result.checks.map((c) => c.number)).toEqual([8, 5]);
+    expect(writes()).toContain("POST /issues/5/labels");
+    expect(result.reason).toContain("1 failed");
+  });
+
+  it("does nothing when the push did not change the list, or was not to the default branch", async () => {
+    for (const e of [
+      push({ commits: [{ modified: ["README.md"] }, { added: ["docs/VOUCHED.td"] }] }),
+      push({ ref: "refs/heads/feature" }),
+      push({ deleted: true }),
+    ]) {
+      const { gh, calls } = world();
+      expect((await run(gh, e)).outcome).toBe("ignored");
+      expect(calls.filter((c) => c.path.includes("/pulls"))).toEqual([]);
+    }
+  });
+
+  it("does nothing without an own list or an unknown label", async () => {
+    for (const config of ["own_list: none\n", 'labels: { unknown: "" }\n']) {
+      const { gh, calls } = world({ files: { "me/repo:.github/trust.yml": config } });
+      expect((await run(gh, push())).outcome).toBe("ignored");
+      expect(calls).toEqual([]);
+    }
+  });
+
+  it("watches the configured list path, and assumes a change when the commits are not all listed", () => {
+    expect(pushTouches(push(), ["docs/TRUST.td"])).toBe(false);
+    expect(pushTouches(push({ commits: [{ removed: ["docs/TRUST.td"] }] }), ["docs/TRUST.td"])).toBe(true);
+    expect(pushTouches(push({ commits: undefined }), ["docs/TRUST.td"])).toBe(true);
+    expect(pushTouches(push({ commits: [] }), ["docs/TRUST.td"])).toBe(true);
+    expect(pushTouches(push({ size: 30, commits: [{ modified: ["README.md"] }] }), ["docs/TRUST.td"])).toBe(true);
   });
 });

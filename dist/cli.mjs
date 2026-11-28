@@ -10210,6 +10210,7 @@ function planActions(input) {
     });
     return actions;
   }
+  if (trigger.action === LIST_CHANGED && kind === "unknown") return [];
   const reopenedByOther = trigger.action === "reopened" && !!trigger.sender && trigger.sender.toLowerCase() !== pr.author.toLowerCase();
   const wantsClose = (kind === "unknown" ? config.onUnknown : config.onDenounced) === "close";
   const close = wantsClose && !reopenedByOther;
@@ -10276,7 +10277,7 @@ async function findOurComment(gh, issue) {
   }
   return null;
 }
-var COMMENT_MARKER, WRITE_PERMISSIONS, MAINTAINER_ASSOCIATIONS, SITE, HEADING, FOOTER, DEFAULT_MESSAGE, DENOUNCED_MESSAGE, LABEL_STYLE;
+var COMMENT_MARKER, LIST_CHANGED, WRITE_PERMISSIONS, MAINTAINER_ASSOCIATIONS, SITE, HEADING, FOOTER, DEFAULT_MESSAGE, DENOUNCED_MESSAGE, LABEL_STYLE;
 var init_check = __esm({
   "src/action/check.ts"() {
     "use strict";
@@ -10286,6 +10287,7 @@ var init_check = __esm({
     init_vouchfile();
     init_live();
     COMMENT_MARKER = "<!-- pr-trust -->";
+    LIST_CHANGED = "list-changed";
     WRITE_PERMISSIONS = /* @__PURE__ */ new Set(["admin", "maintain", "write"]);
     MAINTAINER_ASSOCIATIONS = /* @__PURE__ */ new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
     SITE = "https://maxbenschop.github.io/pr-trust";

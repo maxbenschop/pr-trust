@@ -6,6 +6,9 @@ on:
     types: [opened, reopened]
   issue_comment: # a maintainer's "/vouch" adds the author to .github/VOUCHED.td
     types: [created]
+  push: # the trust list changed: check open "trust: unknown" pull requests again
+    branches: [main]
+    paths: [.github/VOUCHED.td]
   workflow_dispatch: # re-run by hand, e.g. after vouching for someone
     inputs:
       pr-number:
@@ -21,13 +24,15 @@ on:
         default: false
 
 permissions:
-  contents: write # /vouch commits to .github/VOUCHED.td; nothing else is written
-  pull-requests: write
+  contents: write # /vouch commits to .github/VOUCHED.td (or a pr-trust/vouch-* branch); nothing else is written
+  pull-requests: write # labels and comments; /vouch opens a pull request if main only takes pull requests
   issues: write # create the trust labels; reply to and react on /vouch comments
 
 concurrency:
   # Each comment gets its own group, so a busy discussion never cancels a pending check.
-  group: pr-trust-${{ github.event_name == 'issue_comment' && format('comment-{0}', github.event.comment.id) || github.event.pull_request.number || inputs.pr-number }}
+  # Pushes share one group: a newer pending push replaces an older one, which is fine,
+  # since it checks against the newer list.
+  group: pr-trust-${{ github.event_name == 'issue_comment' && format('comment-{0}', github.event.comment.id) || github.event_name == 'push' && 'list-changed' || github.event.pull_request.number || inputs.pr-number }}
   cancel-in-progress: false
 
 jobs:

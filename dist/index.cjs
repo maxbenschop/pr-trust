@@ -9547,7 +9547,7 @@ function addVouch(text, login) {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) return;
     const handle = line.replace(/^[-+]/, "").trim().split(/\s+/, 1)[0] ?? "";
-    entries.push({ index, username: handle.slice(handle.indexOf(":") + 1).toLowerCase(), prefixed: handle.toLowerCase().startsWith("github:") });
+    entries.push({ index, username: handle.slice(handle.indexOf(":") + 1).toLowerCase() });
   });
   let at;
   const sorted = entries.every((e, i) => i === 0 || entries[i - 1].username <= e.username);
@@ -9555,9 +9555,14 @@ function addVouch(text, login) {
   if (entries.length === 0) at = lines.length;
   else if (sorted && after) at = after.index;
   else at = entries.at(-1).index + 1;
-  const prefixed = entries.length > 0 && entries.every((e) => e.prefixed);
-  lines.splice(at, 0, prefixed ? `github:${key}` : key);
+  lines.splice(at, 0, vouchEntry(text, login));
   return { result: "added", text: lines.join(eol) + eol };
+}
+function vouchEntry(text, login) {
+  const key = login.toLowerCase();
+  if (text === null) return key;
+  const handles = text.split(/\r?\n/).map((raw) => raw.trim()).filter((line) => line !== "" && !line.startsWith("#")).map((line) => (line.replace(/^[-+]/, "").trim().split(/\s+/, 1)[0] ?? "").toLowerCase());
+  return handles.length > 0 && handles.every((h) => h.startsWith("github:")) ? `github:${key}` : key;
 }
 
 // src/engine/rules.ts
@@ -9756,6 +9761,7 @@ function liveSources(gh, options) {
 
 // src/action/check.ts
 var COMMENT_MARKER = "<!-- pr-trust -->";
+var LIST_CHANGED = "list-changed";
 var WRITE_PERMISSIONS = /* @__PURE__ */ new Set(["admin", "maintain", "write"]);
 var MAINTAINER_ASSOCIATIONS = /* @__PURE__ */ new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 function pullRequestFromApi(repo, pr) {
@@ -9967,6 +9973,7 @@ function planActions(input2) {
     });
     return actions;
   }
+  if (trigger.action === LIST_CHANGED && kind === "unknown") return [];
   const reopenedByOther = trigger.action === "reopened" && !!trigger.sender && trigger.sender.toLowerCase() !== pr.author.toLowerCase();
   const wantsClose = (kind === "unknown" ? config.onUnknown : config.onDenounced) === "close";
   const close = wantsClose && !reopenedByOther;
@@ -10032,6 +10039,89 @@ async function findOurComment(gh, issue) {
     if (data.length < 100) return null;
   }
   return null;
+}
+
+// src/action/recheck.ts
+var MAX_RECHECKS = 50;
+var MAX_EVENT_COMMITS = 2048;
+var MAX_PAGES = 10;
+function pushTouches(event, paths) {
+  const commits = event.commits;
+  if (!Array.isArray(commits) || commits.length === 0) return true;
+  if (commits.length >= MAX_EVENT_COMMITS || typeof event.size === "number" && event.size > commits.length) return true;
+  const wanted = new Set(paths);
+  return commits.some((c) => [...c.added ?? [], ...c.modified ?? [], ...c.removed ?? []].some((f) => wanted.has(f)));
+}
+async function handlePush(gh, input2) {
+  const { repo, event, dryRun } = input2;
+  const log = input2.log ?? (() => {
+  });
+  const max = input2.max ?? MAX_RECHECKS;
+  const warnings = [];
+  const checks = [];
+  const failed = [];
+  const done = (outcome, reason) => {
+    log(`Re-check: ${outcome} (${reason})`);
+    return { outcome, reason, checks, failed, warnings };
+  };
+  if (event.deleted) return done("ignored", "the push deleted a branch");
+  let base = event.repository?.default_branch;
+  if (!base) base = (await gh.rest("GET", `/repos/${repo}`)).data?.default_branch;
+  if (!base || event.ref !== `refs/heads/${base}`) return done("ignored", "not a push to the default branch");
+  const { config } = await loadRules(gh, repo, input2.configPath);
+  if (!config.ownList) return done("ignored", "own_list is none, so there is no list of this project's own to watch");
+  const label = config.labels.unknown;
+  if (!label) return done("ignored", "the unknown label is turned off, so waiting pull requests cannot be found");
+  const paths = config.ownList.path ? [config.ownList.path] : VOUCH_FILE_CANDIDATES;
+  if (!pushTouches(event, paths)) return done("ignored", `the push did not change ${paths.join(" or ")}`);
+  const waiting = [];
+  let more = false;
+  for (let page = 1; page <= MAX_PAGES && !more; page++) {
+    const { data } = await gh.rest(
+      "GET",
+      `/repos/${repo}/pulls?state=open&sort=created&direction=desc&per_page=100&page=${page}`
+    );
+    const list = Array.isArray(data) ? data : [];
+    for (const pull of list) {
+      if (typeof pull.number !== "number" || !pull.labels?.some((l) => l.name === label)) continue;
+      if (waiting.length === max) {
+        more = true;
+        break;
+      }
+      waiting.push(pull.number);
+    }
+    if (list.length < 100) break;
+    if (page === MAX_PAGES && !more) {
+      warnings.push(`Only the newest ${MAX_PAGES * 100} open pull requests were looked at for the "${label}" label.`);
+    }
+  }
+  if (more) {
+    warnings.push(`More than ${max} open pull requests are labelled "${label}"; only the newest ${max} were checked again.`);
+  }
+  if (waiting.length === 0) return done("rechecked", `the trust list changed, and no open pull request is labelled "${label}"`);
+  const sender = typeof event.sender?.login === "string" ? event.sender.login : null;
+  for (const number of waiting) {
+    try {
+      const { data } = await gh.rest("GET", `/repos/${repo}/pulls/${number}`);
+      const result = await runCheck(gh, {
+        pr: pullRequestFromApi(repo, data),
+        trigger: { action: LIST_CHANGED, sender },
+        configPath: input2.configPath,
+        dryRun,
+        log
+      });
+      checks.push({ number, result });
+    } catch (error) {
+      failed.push({ number, error: error.message });
+      warnings.push(`Could not check #${number} again: ${error.message}`);
+    }
+  }
+  const admitted = checks.filter((c) => c.result.status === "admitted" || c.result.status === "exempt").length;
+  const errors = checks.filter((c) => c.result.status === "error").length + failed.length;
+  return done(
+    "rechecked",
+    `the trust list changed; checked ${waiting.length} pull request${waiting.length === 1 ? "" : "s"} labelled "${label}" again: ${admitted} now admitted${errors ? `, ${errors} failed` : ""}`
+  );
 }
 
 // src/action/report.ts
@@ -10120,7 +10210,7 @@ async function handleComment(gh, input2) {
   try {
     return await carryOut(command2);
   } catch (error) {
-    const why = error.message;
+    const why = oneLine(error.message);
     await reply(`Something went wrong, and \`/vouch\` may not have finished: ${why}`);
     return done("failed", `the command failed: ${why}`);
   }
@@ -10172,6 +10262,7 @@ async function handleComment(gh, input2) {
     let already = null;
     let lastError = null;
     let path = configured ?? NEW_LIST_PATH;
+    let line = vouchEntry(null, login);
     for (let attempt = 1; attempt <= 2 && !written && !already; attempt++) {
       let current;
       try {
@@ -10181,6 +10272,7 @@ async function handleComment(gh, input2) {
         break;
       }
       path = current.path;
+      line = vouchEntry(current.text, login);
       const edit = addVouch(current.text, login);
       if (edit.result === "denounced") {
         return refuse(
@@ -10197,22 +10289,21 @@ async function handleComment(gh, input2) {
         written = { path, text: edit.text };
         break;
       }
-      const put = await gh.rest(
-        "PUT",
-        `/repos/${repo}/contents/${encodePath(path)}`,
-        { message, content: Buffer.from(edit.text, "utf8").toString("base64"), ...current.sha ? { sha: current.sha } : {} },
-        [403, 404, 409, 422]
-      );
-      if (put.status === 200 || put.status === 201) written = { path, text: edit.text };
+      const put = await writeList(gh, repo, { path, text: edit.text, sha: current.sha, message });
+      if (put.ok) written = { path, text: edit.text };
       else {
-        lastError = new GitHubError(`${put.status} ${put.data?.message ?? ""}`.trim(), put.status);
-        const conflict = put.status === 409 || put.status === 422;
-        log(`Writing ${path} failed (${lastError.message})${conflict && attempt === 1 ? "; reading it again and retrying once" : ""}`);
+        lastError = put.error;
+        if (isRuleViolation(put.error)) {
+          log(`Writing ${path} on the default branch was refused by its rules (${put.error.message}); opening a pull request instead`);
+          return propose(login, path, line, message);
+        }
+        const conflict = put.error.status === 409 || put.error.status === 422;
+        log(`Writing ${path} failed (${put.error.message})${conflict && attempt === 1 ? "; reading it again and retrying once" : ""}`);
         if (!conflict) break;
       }
     }
     if (!written && !already) {
-      await reply(writeFailureText(login, path, lastError));
+      await reply(writeFailureText(line, path, lastError));
       return done("failed", `could not add ${login} to ${path}: ${lastError?.message ?? "unknown error"}`);
     }
     const result = written ?? already;
@@ -10242,12 +10333,127 @@ async function handleComment(gh, input2) {
       return done(outcome, reason);
     }
   }
+  async function propose(login, path, line, message) {
+    const branch = proposalBranch(login);
+    const lead = "The default branch only takes changes through pull requests";
+    const open = await findOpenProposal(gh, repo, branch);
+    if (open) {
+      await reply(`${lead}, and #${open} to vouch for \`${login}\` is already open. Merge it to finish.`);
+      return done("proposed", `pull request #${open} to add ${login} to ${path} is already open`);
+    }
+    const { data: info } = await gh.rest("GET", `/repos/${repo}`);
+    const base = info?.default_branch;
+    if (!base) throw new Error("could not find the default branch");
+    const { data: ref } = await gh.rest("GET", `/repos/${repo}/git/ref/heads/${encodePath(base)}`);
+    const head = ref?.object?.sha;
+    if (typeof head !== "string") throw new Error(`could not read the tip of ${base}`);
+    const created = await gh.rest("POST", `/repos/${repo}/git/refs`, { ref: `refs/heads/${branch}`, sha: head }, [403, 422]);
+    const ours = created.status === 201;
+    if (created.status === 403) {
+      return cannotPropose(`could not create the branch ${branch}`, restError(created), line, path, "branch");
+    }
+    if (!ours) {
+      log(`Branch ${branch} already exists without an open pull request; resetting it to ${base}`);
+      await gh.rest("PATCH", `/repos/${repo}/git/refs/heads/${encodePath(branch)}`, { sha: head, force: true });
+    }
+    const cleanUp = async () => {
+      if (!ours) return;
+      try {
+        await gh.rest("DELETE", `/repos/${repo}/git/refs/heads/${encodePath(branch)}`, void 0, [404, 422]);
+      } catch (error) {
+        warnings.push(`Could not delete the branch ${branch}: ${error.message}`);
+      }
+    };
+    try {
+      const current = await readList(gh, repo, path, branch);
+      const edit = addVouch(current.text, login);
+      if (edit.result !== "added") {
+        throw new Error(`${path} changed meanwhile (${login} is now ${edit.result === "denounced" ? "denounced" : "already vouched for"} there); comment /vouch again`);
+      }
+      line = vouchEntry(current.text, login);
+      const put = await writeList(gh, repo, { path, text: edit.text, sha: current.sha, message, branch });
+      if (!put.ok) {
+        await cleanUp();
+        return cannotPropose(`could not commit to ${branch}`, put.error, line, path, "branch");
+      }
+      const body = `@${commenter} asked for this with \`/vouch\` in #${number}. Merging it adds \`${line}\` to \`${path}\`, so \`${login}\`'s pull requests pass the contributor check.
+
+This pull request was opened by GitHub Actions, so it does not start other workflows. If required status checks are waiting, push an empty commit to \`${branch}\` or close and reopen this pull request to run them.
+`;
+      const pull = await gh.rest(
+        "POST",
+        `/repos/${repo}/pulls`,
+        { title: `Vouch for @${login}`, head: branch, base, body, maintainer_can_modify: true },
+        [403, 422]
+      );
+      let opened = pull.status === 201 ? pull.data?.number : void 0;
+      if (opened === void 0 && pull.status === 422) opened = await findOpenProposal(gh, repo, branch) ?? void 0;
+      if (typeof opened !== "number") {
+        await cleanUp();
+        const error = restError(pull);
+        return cannotPropose("could not open a pull request", error, line, path, error.status === 403 ? "pull-request" : "retry");
+      }
+      await reply(`${lead}, so I opened #${opened} to add \`${line}\` to \`${path}\`. Merge it to finish.`);
+      return done("proposed", `opened pull request #${opened} to add ${login} to ${path}, since the default branch only takes pull requests`);
+    } catch (error) {
+      await cleanUp();
+      throw error;
+    }
+  }
+  async function cannotPropose(reason, error, line, path, blocked) {
+    const hint = {
+      "pull-request": `To let it, turn on "Allow GitHub Actions to create and approve pull requests" in the repository's Settings > Actions > General (and in the organization's settings, if it is greyed out there), and give the workflow \`pull-requests: write\`.`,
+      branch: `Check that the workflow has \`contents: write\` and that your rules let it create and push to \`pr-trust/vouch-*\` branches.`,
+      retry: "Try again later."
+    }[blocked];
+    await reply(
+      `The default branch only takes changes through pull requests, and this workflow could not open one (GitHub said: ${error.message}), so nothing was changed. ${hint} Or add the line \`${line}\` to \`${path}\` in a pull request yourself, and comment \`/vouch\` again once it is merged.`
+    );
+    return done("failed", `${reason}: ${error.message}`);
+  }
 }
-async function readList(gh, repo, configured) {
+function proposalBranch(login) {
+  return `pr-trust/vouch-${login.toLowerCase()}`;
+}
+async function findOpenProposal(gh, repo, branch) {
+  const owner = repo.split("/")[0];
+  const { data } = await gh.rest(
+    "GET",
+    `/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=10`
+  );
+  const found = Array.isArray(data) ? data.find((p) => typeof p.number === "number") : void 0;
+  return found?.number ?? null;
+}
+async function writeList(gh, repo, file) {
+  const put = await gh.rest(
+    "PUT",
+    `/repos/${repo}/contents/${encodePath(file.path)}`,
+    {
+      message: file.message,
+      content: Buffer.from(file.text, "utf8").toString("base64"),
+      ...file.sha ? { sha: file.sha } : {},
+      ...file.branch ? { branch: file.branch } : {}
+    },
+    [403, 404, 409, 422]
+  );
+  return put.status === 200 || put.status === 201 ? { ok: true } : { ok: false, error: restError(put) };
+}
+function restError(response) {
+  const message = response.data?.message;
+  return new GitHubError(`${response.status} ${typeof message === "string" ? oneLine(message) : ""}`.trim(), response.status);
+}
+function isRuleViolation(error) {
+  return (error.status === 403 || error.status === 409 || error.status === 422) && /repository rule violations?|protected branch|must be made through a pull request|required status checks?/i.test(error.message);
+}
+function oneLine(text, max = 200) {
+  const flat = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== "").map((l, i, all) => i < all.length - 1 && !/[.:;!?]$/.test(l) ? `${l}.` : l).join(" ").replaceAll("`", "'");
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}\u2026` : flat;
+}
+async function readList(gh, repo, configured, ref) {
   for (const path of configured ? [configured] : VOUCH_FILE_CANDIDATES) {
     const { status, data } = await gh.rest(
       "GET",
-      `/repos/${repo}/contents/${encodePath(path)}`,
+      `/repos/${repo}/contents/${encodePath(path)}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`,
       void 0,
       [404]
     );
@@ -10264,15 +10470,16 @@ function isSafePath(path) {
 function encodePath(path) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
-function writeFailureText(login, path, error) {
+function writeFailureText(line, path, error) {
   const status = error instanceof GitHubError ? error.status : null;
-  const what = `Could not add \`${login}\` to \`${path}\`${error ? ` (GitHub said: ${error.message})` : ""}, so nothing was changed.`;
-  const byHand = `add the line \`${login.toLowerCase()}\` to \`${path}\` on the default branch yourself, then comment \`/vouch\` again to re-run the check.`;
+  const said = error ? ` (${status !== null ? "GitHub said" : "error"}: ${oneLine(error.message)})` : "";
+  const what = `Could not add \`${line}\` to \`${path}\`${said}, so nothing was changed.`;
+  const byHand = `add the line \`${line}\` to \`${path}\` on the default branch yourself, then comment \`/vouch\` again to re-run the check.`;
   if (status === 403 || status === 404) {
     return `${what} The workflow's token cannot write to the repository: give the workflow \`permissions: contents: write\`, or ${byHand}`;
   }
   if (status === 409 || status === 422) {
-    return `${what} If the default branch is protected, let GitHub Actions push to it, or ${byHand}`;
+    return `${what} The list kept changing while it was being written. Try again, or ${byHand}`;
   }
   return `${what} Try again, or ${byHand}`;
 }
@@ -10332,8 +10539,34 @@ async function main() {
     }
     return 0;
   }
-  let pr;
   const number = input("pr-number");
+  if (process.env.GITHUB_EVENT_NAME === "push" && !number) {
+    let result2;
+    try {
+      result2 = await handlePush(gh, { repo, event, configPath, dryRun, log: (m) => console.log(m) });
+    } catch (error) {
+      command("error", `Checking waiting pull requests again failed: ${error.message}`);
+      return input("fail-on-error") === "true" ? 1 : 0;
+    }
+    setOutput("status", "skipped");
+    setOutput("reason", result2.reason);
+    setOutput("rechecked", result2.checks.map((c) => c.number).join(","));
+    console.log(`Result: ${result2.reason}`);
+    for (const warning of [...result2.warnings, ...result2.checks.flatMap((c) => c.result.warnings)]) command("warning", warning);
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      const lines = ["### Trust list changed", "", result2.reason, ""];
+      for (const { number: n, result: check } of result2.checks) lines.push(summaryMarkdown(`#${n}`, check));
+      import_node_fs.default.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}
+`);
+    }
+    const failures = result2.failed.length + result2.checks.filter((c) => c.result.status === "error").length;
+    if (failures > 0) {
+      command("error", `${failures} pull request${failures === 1 ? "" : "s"} could not be checked again. They were left open.`);
+      return input("fail-on-error") === "true" ? 1 : 0;
+    }
+    return 0;
+  }
+  let pr;
   if (number) {
     if (!/^\d+$/.test(number)) {
       command("error", `pr-number must be a number, got "${number}"`);
@@ -10344,7 +10577,7 @@ async function main() {
   } else if (event.pull_request) {
     pr = pullRequestFromApi(event.pull_request.base?.repo?.full_name ?? repo, event.pull_request);
   } else {
-    command("error", "This event has no pull request. Run on pull_request_target or issue_comment, or set the pr-number input.");
+    command("error", "This event has no pull request. Run on pull_request_target, issue_comment or push, or set the pr-number input.");
     return 1;
   }
   const pretend = input("as-author");

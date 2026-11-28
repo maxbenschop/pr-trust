@@ -1,5 +1,5 @@
 name: PR Trust
-description: Check pull request authors against contributor-trust rules, with Vouch list support and a /vouch comment command.
+description: Check pull request authors against contributor-trust rules, with Vouch list support, a /vouch comment command and re-checks when the list changes.
 author: maxbenschop
 branding:
   icon: check-square
@@ -9,7 +9,9 @@ inputs:
   github-token:
     description: >-
       Token used to read rules and trust lists and to label, comment on and close the PR. For
-      the /vouch command (issue_comment events) it also needs contents: write.
+      the /vouch command (issue_comment events) it also needs contents: write; on a default
+      branch that only takes pull requests, /vouch opens one, which also needs the repository
+      setting "Allow GitHub Actions to create and approve pull requests".
     default: ${{ github.token }}
   config:
     description: Path of the rules file, read from the default branch.
@@ -35,7 +37,7 @@ outputs:
     description: >-
       admitted, exempt, unknown, denounced, skipped (maintainer, bot or closed PR) or error. On a
       comment: the result of checking the PR again after /vouch, else skipped (or error if
-      /vouch failed).
+      /vouch failed). On a push: skipped.
   admitted:
     description: '"true" when the author may proceed (admitted, exempt or skipped).'
   reason:
@@ -44,8 +46,13 @@ outputs:
     description: The rule that admitted the author, if any.
   command:
     description: >-
-      On a comment: vouched, already-vouched, refused or failed for a /vouch command from a
-      maintainer; empty for any other comment.
+      On a comment: vouched, already-vouched, proposed (a pull request adding the account is
+      open), refused or failed for a /vouch command from a maintainer; empty for any other
+      comment.
+  rechecked:
+    description: >-
+      On a push to the default branch that changed the project's own list: the numbers of the
+      open "unknown" pull requests checked again, comma-separated.
 
 runs:
   using: node24

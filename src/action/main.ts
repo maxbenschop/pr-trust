@@ -2,11 +2,13 @@
  * GitHub Action entry point. Reads the event and inputs from the runner's environment,
  * runs the check and reports through outputs, annotations and the job summary.
  * Inputs: github-token, config, dry-run, pr-number, as-author, fail-on-error.
- * On an `issue_comment` event it handles the `/vouch` command instead (see vouch.ts).
+ * On an `issue_comment` event it handles the `/vouch` command instead (see vouch.ts), and
+ * on a `push` that changed the trust list it checks waiting pull requests again (recheck.ts).
  */
 import fs from "node:fs";
 import { createClient } from "../github/client.ts";
 import { asAuthor, pullRequestFromApi, runCheck } from "./check.ts";
+import { handlePush } from "./recheck.ts";
 import { describeAction, summaryMarkdown } from "./report.ts";
 import { handleComment } from "./vouch.ts";
 
@@ -66,8 +68,34 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  let pr;
   const number = input("pr-number");
+  if (process.env.GITHUB_EVENT_NAME === "push" && !number) {
+    let result;
+    try {
+      result = await handlePush(gh, { repo, event, configPath, dryRun, log: (m) => console.log(m) });
+    } catch (error) {
+      command("error", `Checking waiting pull requests again failed: ${(error as Error).message}`);
+      return input("fail-on-error") === "true" ? 1 : 0;
+    }
+    setOutput("status", "skipped");
+    setOutput("reason", result.reason);
+    setOutput("rechecked", result.checks.map((c) => c.number).join(","));
+    console.log(`Result: ${result.reason}`);
+    for (const warning of [...result.warnings, ...result.checks.flatMap((c) => c.result.warnings)]) command("warning", warning);
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      const lines = ["### Trust list changed", "", result.reason, ""];
+      for (const { number: n, result: check } of result.checks) lines.push(summaryMarkdown(`#${n}`, check));
+      fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`);
+    }
+    const failures = result.failed.length + result.checks.filter((c) => c.result.status === "error").length;
+    if (failures > 0) {
+      command("error", `${failures} pull request${failures === 1 ? "" : "s"} could not be checked again. They were left open.`);
+      return input("fail-on-error") === "true" ? 1 : 0;
+    }
+    return 0;
+  }
+
+  let pr;
   if (number) {
     if (!/^\d+$/.test(number)) {
       command("error", `pr-number must be a number, got "${number}"`);
@@ -78,7 +106,7 @@ async function main(): Promise<number> {
   } else if (event.pull_request) {
     pr = pullRequestFromApi(event.pull_request.base?.repo?.full_name ?? repo, event.pull_request);
   } else {
-    command("error", "This event has no pull request. Run on pull_request_target or issue_comment, or set the pr-number input.");
+    command("error", "This event has no pull request. Run on pull_request_target, issue_comment or push, or set the pr-number input.");
     return 1;
   }
 

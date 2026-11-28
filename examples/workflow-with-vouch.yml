@@ -2,7 +2,11 @@
 # A maintainer (write access or more) comments "/vouch" on a pull request to add its author
 # to your Vouch list, or "/vouch @login" on any pull request or issue to add that account.
 # The Action commits the line to your list on the default branch and checks the pull
-# request again. Without the issue_comment trigger below, there is no /vouch command.
+# request again. If the default branch only takes pull requests, it opens one instead
+# (this needs "Allow GitHub Actions to create and approve pull requests" in Settings >
+# Actions > General). Without the issue_comment trigger below, there is no /vouch command.
+# The push trigger checks open "unknown" pull requests again whenever the list changes,
+# for example when such a pull request is merged.
 name: Contributor trust
 
 on:
@@ -10,10 +14,13 @@ on:
     types: [opened, reopened]
   issue_comment: # only new comments; edits are ignored
     types: [created]
+  push: # optional: check waiting pull requests again when the list changes
+    branches: [main] # your default branch
+    paths: [.github/VOUCHED.td] # the file own_list points to
 
 permissions:
-  contents: write # commit to your trust list (.github/VOUCHED.td or own_list's path)
-  pull-requests: write
+  contents: write # commit to your trust list (.github/VOUCHED.td or own_list's path), or a pr-trust/vouch-* branch
+  pull-requests: write # labels and comments; a pull request for /vouch on a protected default branch
   issues: write # reply to and react on /vouch comments on issues
 
 jobs:

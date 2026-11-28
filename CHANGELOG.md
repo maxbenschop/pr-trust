@@ -6,6 +6,17 @@
   maintainer comments `/vouch` on a pull request, or `/vouch @login` anywhere, to add the
   account to the project's own Vouch list, and the pull request is checked again. New
   `command` output. See `examples/workflow-with-vouch.yml`.
+- `/vouch` on a default branch that only takes pull requests (branch protection or a
+  ruleset) opens a pull request with the one-line change on `pr-trust/vouch-<login>`, or
+  links the one already open, instead of failing (`command` output `proposed`). Opening it
+  needs "Allow GitHub Actions to create and approve pull requests"; without it, the branch
+  is deleted and the reply says what to change. A refused commit is no longer retried as if
+  it were a conflict, GitHub's messages are flattened to one line in replies, and the line
+  to add by hand is shown in the list's own style (`github:login` where the list uses it).
+- Re-checks when the trust list changes (opt-in, with a `push` trigger and a `paths:` filter
+  for the list): open pull requests labelled "unknown" are checked again, at most 50 per
+  push. Newly admitted ones are updated; ones still unknown are left untouched. New
+  `rechecked` output.
 - New default comment: a heading with the result, a note saying what happens next, and the
   project's rules as a list of ways to pass. Denounced authors get their own shorter comment.
 - `{rules}` placeholder for custom messages.

@@ -21,6 +21,9 @@ export type PullRequestInfo = {
 /** The event that started the check: used to respect a maintainer reopening a PR. */
 export type Trigger = { action: string | null; sender: string | null };
 
+/** `Trigger.action` for a check run again because the project's own list changed. */
+export const LIST_CHANGED = "list-changed";
+
 export type Status = Decision["status"] | "skipped" | "error";
 
 export type PlannedAction =
@@ -317,6 +320,10 @@ export function planActions(input: {
     });
     return actions;
   }
+
+  // Checked again only because the trust list changed, and still unknown: it was handled
+  // when it was opened, so leave it exactly as it is (no second comment, never a close).
+  if (trigger.action === LIST_CHANGED && kind === "unknown") return [];
 
   // A maintainer reopening a closed PR overrides the gate; only label it.
   const reopenedByOther =

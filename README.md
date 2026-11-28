@@ -116,8 +116,56 @@ jobs:
   the check runs again.
 - Nothing is written if the account is already vouched for (the pull request is still
   checked again), or if it is denounced: `/vouch` never overturns a denouncement, and says so.
-- If it cannot write (`own_list: none`, no `contents: write`, a protected default branch),
-  it replies saying what to do instead. It never changes the pull request in that case.
+- If it cannot write (`own_list: none`, no `contents: write`), it replies saying what to do
+  instead, including the exact line to add. It never changes the pull request in that case.
+
+### Protected default branches
+
+If branch protection or a ruleset says changes to the default branch must go through a pull
+request, `/vouch` opens one instead: it commits the same one-line change to a branch named
+`pr-trust/vouch-<login>`, opens a pull request titled "Vouch for @login" that says who asked
+for it and where, and replies with a link: merge it to finish. If a pull request for that
+account is already open, it links that one rather than opening a second. A leftover
+`pr-trust/vouch-<login>` branch with no open pull request is reset to the default branch and
+reused.
+
+This needs `pull-requests: write` (already in the example) and the repository setting
+**Allow GitHub Actions to create and approve pull requests** (Settings > Actions > General >
+Workflow permissions; in an organization it may have to be allowed there first). Without
+it, `/vouch` deletes the branch it created and replies saying which setting to change, or to
+add the line in a pull request yourself.
+
+A pull request opened with the workflow's `GITHUB_TOKEN` does not start other workflows. If
+your rules require status checks, they stay pending until a person pushes to the branch (an
+empty commit is enough) or closes and reopens the pull request.
+
+Once it is merged, the pull request you commented on is checked again only if the workflow
+also runs on pushes to the list (next section); otherwise comment `/vouch` again.
+
+## Checking again when the list changes
+
+Pull requests labelled "unknown" are not checked again on their own. To check them again
+whenever your own list changes on the default branch (a merged `/vouch` pull request, or an
+edit by hand), also run the workflow on pushes that touch the list:
+
+```yaml
+on:
+  # ... the triggers above, plus:
+  push:
+    branches: [main]                 # your default branch
+    paths: [.github/VOUCHED.td]      # the file own_list points to
+```
+
+On such a push, the Action checks the newest 50 open pull requests carrying your "unknown"
+label again (with a warning if there are more). Those now admitted get the admitted label and
+their comment updated, as usual, and an author you have just denounced is handled as on any
+check. Those still unknown are left exactly as they are: no second
+comment, and never closed, even with `on_unknown: close`. One that fails to check does not stop
+the others. It does nothing with `own_list: none`, with the unknown label turned off, or if the
+push did not change the list. This needs only `contents: read` and `pull-requests: write`.
+A commit that `/vouch` makes directly with the workflow's `GITHUB_TOKEN` does not start this
+run (GitHub does not let that token trigger workflows), but `/vouch` already checks the pull
+request it was posted on; merging its pull request by hand does start it.
 
 ## Rules reference
 
@@ -150,7 +198,7 @@ people trusted by the projects it trusts.
 
 | Input | Default | |
 |---|---|---|
-| `github-token` | `${{ github.token }}` | Needs `pull-requests: write` to label, comment and close; `/vouch` also needs `contents: write` |
+| `github-token` | `${{ github.token }}` | Needs `pull-requests: write` to label, comment and close; `/vouch` also needs `contents: write` (and, on a protected default branch, permission to open pull requests) |
 | `config` | `.github/trust.yml` | Rules file on the default branch |
 | `dry-run` | `false` | Decide and report, change nothing |
 | `pr-number` | from the event | Check another PR, for example from `workflow_dispatch` |
@@ -163,7 +211,8 @@ people trusted by the projects it trusts.
 | `admitted` | `"true"` for admitted, exempt or skipped |
 | `reason` | One line, such as `3 merged PRs in rust-lang/rust` |
 | `rule` | The rule that admitted the author |
-| `command` | On a comment: `vouched`, `already-vouched`, `refused` or `failed` for a maintainer's `/vouch`, else empty |
+| `command` | On a comment: `vouched`, `already-vouched`, `proposed` (a pull request adding the line is open), `refused` or `failed` for a maintainer's `/vouch`, else empty |
+| `rechecked` | On a push that changed the list: the numbers of the pull requests checked again, comma-separated |
 
 Each run also writes a short table to the job summary.
 
@@ -235,7 +284,8 @@ The Action:
   find at all, it reads the author's own merged PRs instead, up to 500 of them; if that is
   not enough to decide, the rule counts only what it read and a warning says so.
 - It acts on the PR's state when the event fired. A PR edited later is not checked again
-  unless it is reopened, or a maintainer comments `/vouch`.
+  unless it is reopened, a maintainer comments `/vouch`, or (with the `push` trigger) your
+  own list changes.
 - It needs `pull_request_target`. With `pull_request`, PRs from forks get a read-only token,
   so labelling fails and the check reports an error.
 

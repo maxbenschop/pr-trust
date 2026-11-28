@@ -30,18 +30,36 @@ to reply on issues). With it, the Action additionally:
   resolves to, or a new `.github/VOUCHED.td`), through the Contents API. Each commit adds
   exactly one line, a GitHub login, which can only contain letters, digits and hyphens. It
   never removes or changes a line, so it cannot lift a denouncement;
+- if the default branch's protection or rules refuse that commit, makes the same one-line
+  commit on a branch named `pr-trust/vouch-<login>` instead (creating it from the default
+  branch, or resetting a leftover one that no open pull request uses) and opens **one pull
+  request** from it to the default branch, or links the one already open. Nothing reaches
+  the default branch until a maintainer merges it. If the pull request cannot be opened, the
+  branch it just created is deleted. Opening it needs `pull-requests: write` and the
+  repository setting "Allow GitHub Actions to create and approve pull requests";
 - reacts to the command comment, posts a short reply to maintainers when it cannot do what
-  they asked, and checks the pull request again as above.
+  they asked (or links the pull request it opened), and checks the pull request again as
+  above.
 
 The comment body is treated as hostile: only its first line is read, it must match the
-command exactly, and nothing from it reaches a file, API path, reply or shell except a login
-that has passed the check above. Comments from anyone without write access get no reply, so
+command exactly, and nothing from it reaches a file, branch name, API path, pull request,
+reply or shell except a login that has passed the check above. A failed `/vouch` never
+changes the pull request or issue it was posted on. Comments from anyone without write access get no reply, so
 the command cannot be used to make the bot post. Edited comments are ignored. The
 `issue_comment` trigger, like `pull_request_target`, runs the workflow from your default
 branch; never check out the pull request's code in that job either.
 
 Without the `issue_comment` trigger the command does not exist, and `contents: read` is
 enough.
+
+## Checking again when the list changes
+
+If your workflow also runs on `push` (with a `paths:` filter for your list), a push to the
+default branch that changes your own list makes the Action check open pull requests labelled
+"unknown" again, at most 50 per push. It reads the same files and uses the same permissions
+as a normal check. Pull requests that are now admitted get their label and comment updated; one
+whose author you have just denounced is handled as on any check (closed if `on_denounced:
+close`). One that is still unknown is not written to at all, and is never closed by this.
 
 ## Design choices that matter for safety
 
