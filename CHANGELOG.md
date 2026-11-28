@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `/vouch` comment command (opt-in, with an `issue_comment` trigger and `contents: write`): a
+  maintainer comments `/vouch` on a pull request, or `/vouch @login` anywhere, to add the
+  account to the project's own Vouch list, and the pull request is checked again. New
+  `command` output. See `examples/workflow-with-vouch.yml`.
 - New default comment: a heading with the result, a note saying what happens next, and the
   project's rules as a list of ways to pass. Denounced authors get their own shorter comment.
 - `{rules}` placeholder for custom messages.

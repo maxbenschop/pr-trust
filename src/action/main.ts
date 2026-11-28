@@ -2,11 +2,13 @@
  * GitHub Action entry point. Reads the event and inputs from the runner's environment,
  * runs the check and reports through outputs, annotations and the job summary.
  * Inputs: github-token, config, dry-run, pr-number, as-author, fail-on-error.
+ * On an `issue_comment` event it handles the `/vouch` command instead (see vouch.ts).
  */
 import fs from "node:fs";
 import { createClient } from "../github/client.ts";
 import { asAuthor, pullRequestFromApi, runCheck } from "./check.ts";
 import { describeAction, summaryMarkdown } from "./report.ts";
+import { handleComment } from "./vouch.ts";
 
 function input(name: string): string {
   return (process.env[`INPUT_${name.replace(/ /g, "_").toUpperCase()}`] ?? "").trim();
@@ -37,6 +39,32 @@ async function main(): Promise<number> {
   const repo = process.env.GITHUB_REPOSITORY ?? "";
   const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")) : {};
   const gh = createClient({ token, userAgent: "pr-trust-action", log: (m) => console.log(m) });
+  const configPath = input("config") || ".github/trust.yml";
+  const dryRun = input("dry-run") === "true";
+
+  if (process.env.GITHUB_EVENT_NAME === "issue_comment") {
+    const result = await handleComment(gh, { repo, event, configPath, dryRun, log: (m) => console.log(m) });
+    const check = result.check;
+    setOutput("command", result.outcome === "ignored" ? "" : result.outcome);
+    setOutput("status", check?.status ?? (result.outcome === "failed" ? "error" : "skipped"));
+    setOutput("reason", result.reason);
+    if (check) {
+      setOutput("admitted", String(["admitted", "exempt", "skipped"].includes(check.status)));
+      setOutput("rule", check.rule ?? "");
+    }
+    for (const warning of [...result.warnings, ...(check?.warnings ?? [])]) command("warning", warning);
+    if (result.outcome === "ignored") return 0;
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      const lines = [`### /vouch: ${result.outcome}`, "", result.reason, ""];
+      if (check) lines.push(summaryMarkdown(`#${event.issue?.number}`, check));
+      fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`);
+    }
+    if (result.outcome === "failed") {
+      command("error", `/vouch failed: ${result.reason}`);
+      return input("fail-on-error") === "true" ? 1 : 0;
+    }
+    return 0;
+  }
 
   let pr;
   const number = input("pr-number");
@@ -50,7 +78,7 @@ async function main(): Promise<number> {
   } else if (event.pull_request) {
     pr = pullRequestFromApi(event.pull_request.base?.repo?.full_name ?? repo, event.pull_request);
   } else {
-    command("error", "This event has no pull request. Run on pull_request_target, or set the pr-number input.");
+    command("error", "This event has no pull request. Run on pull_request_target or issue_comment, or set the pr-number input.");
     return 1;
   }
 
@@ -68,8 +96,8 @@ async function main(): Promise<number> {
   const result = await runCheck(gh, {
     pr,
     trigger: { action: event.action ?? null, sender: event.sender?.login ?? null },
-    configPath: input("config") || ".github/trust.yml",
-    dryRun: input("dry-run") === "true",
+    configPath,
+    dryRun,
     log: (m) => console.log(m),
   });
 

@@ -9517,6 +9517,48 @@ function parseVouchFile(text) {
   for (const login of denounced) vouched.delete(login);
   return { vouched, denounced };
 }
+var LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+function isLogin(value) {
+  return LOGIN.test(value);
+}
+var NEW_VOUCH_FILE_HEADER = `# Vouched contributors for this project.
+#
+# See https://github.com/mitchellh/vouch for details.
+#
+# Syntax:
+#   - One handle per line (without @), sorted alphabetically.
+#   - Optional platform prefix: platform:username (e.g., github:user).
+#   - Denounce with minus prefix: -username or -platform:username.
+#   - Optional details after a space following the handle.
+`;
+function addVouch(text, login) {
+  if (!isLogin(login)) throw new Error(`not a GitHub username: ${JSON.stringify(login)}`);
+  const key = login.toLowerCase();
+  if (text === null) return { result: "added", text: `${NEW_VOUCH_FILE_HEADER}${key}
+` };
+  const list = parseVouchFile(text);
+  if (list.denounced.has(key)) return { result: "denounced" };
+  if (list.vouched.has(key)) return { result: "already-vouched" };
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.split(/\r?\n/);
+  if (lines.at(-1) === "") lines.pop();
+  const entries = [];
+  lines.forEach((raw, index) => {
+    const line = raw.trim();
+    if (line === "" || line.startsWith("#")) return;
+    const handle = line.replace(/^[-+]/, "").trim().split(/\s+/, 1)[0] ?? "";
+    entries.push({ index, username: handle.slice(handle.indexOf(":") + 1).toLowerCase(), prefixed: handle.toLowerCase().startsWith("github:") });
+  });
+  let at;
+  const sorted = entries.every((e, i) => i === 0 || entries[i - 1].username <= e.username);
+  const after = entries.find((e) => e.username > key);
+  if (entries.length === 0) at = lines.length;
+  else if (sorted && after) at = after.index;
+  else at = entries.at(-1).index + 1;
+  const prefixed = entries.length > 0 && entries.every((e) => e.prefixed);
+  lines.splice(at, 0, prefixed ? `github:${key}` : key);
+  return { result: "added", text: lines.join(eol) + eol };
+}
 
 // src/engine/rules.ts
 var OWN_LIST = "own list";
@@ -9612,7 +9654,6 @@ async function readFirstFile(gh, repo, paths) {
   const index = texts.findIndex((t) => t !== null);
   return index === -1 ? null : { path: paths[index], text: texts[index] };
 }
-var LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 var FALLBACK_MAX_PAGES = 5;
 function liveSources(gh, options) {
   const warnings = [];
@@ -9668,7 +9709,7 @@ function liveSources(gh, options) {
   return {
     warnings,
     async ownList(login) {
-      const list = await loadList({ repo: options.repo, path: options.ownListPath }, options.ownListPath !== null);
+      const list = options.ownListText != null ? parseVouchFile(options.ownListText) : await loadList({ repo: options.repo, path: options.ownListPath }, options.ownListPath !== null);
       const key = normalizeLogin(login);
       if (list.denounced.has(key)) return "denounced";
       return list.vouched.has(key) ? "vouched" : "unknown";
@@ -9677,7 +9718,7 @@ function liveSources(gh, options) {
       return (await loadList(source)).vouched.has(normalizeLogin(login));
     },
     async mergedCount(named, login, from, to, min) {
-      if (!LOGIN.test(login)) return 0;
+      if (!isLogin(login)) return 0;
       const merges = (repo2) => count(`repo:${repo2} is:pr is:merged author:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`);
       let repo = named;
       let n = await merges(repo);
@@ -9732,10 +9773,9 @@ function pullRequestFromApi(repo, pr) {
 function isBotAccount(login, type) {
   return type === "Bot" || /\[bot\]$/i.test(login);
 }
-var LOGIN2 = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 function asAuthor(pr, login) {
   const name = login.trim().replace(/^@/, "");
-  if (!LOGIN2.test(name)) throw new Error(`as-author must be a GitHub username, got "${login}"`);
+  if (!isLogin(name)) throw new Error(`as-author must be a GitHub username, got "${login}"`);
   return { ...pr, author: name, authorType: "User", association: "NONE" };
 }
 async function runCheck(gh, input2) {
@@ -9764,7 +9804,11 @@ async function runCheck(gh, input2) {
       warnings.push(`No rules found at ${input2.configPath} on the default branch; using the built-in defaults.`);
     }
     const changedPaths = config.exemptPaths.length > 0 ? await changedFiles(gh, pr) : null;
-    const sources = liveSources(gh, { repo: pr.repo, ownListPath: config.ownList?.path ?? null });
+    const sources = liveSources(gh, {
+      repo: pr.repo,
+      ownListPath: config.ownList?.path ?? null,
+      ownListText: input2.ownListText
+    });
     const decision = await evaluate(
       { config, repo: pr.repo, login: pr.author, at: input2.now ?? /* @__PURE__ */ new Date(), changedPaths },
       sources
@@ -9811,9 +9855,12 @@ async function hasWriteAccess(gh, pr) {
 }
 async function loadConfig(gh, input2) {
   if (input2.configText != null) return { config: parseConfig(input2.configText), source: "provided file" };
-  const found = await readFirstFile(gh, input2.pr.repo, [input2.configPath]);
+  return loadRules(gh, input2.pr.repo, input2.configPath);
+}
+async function loadRules(gh, repo, configPath) {
+  const found = await readFirstFile(gh, repo, [configPath]);
   if (!found) return { config: parseConfig(DEFAULT_CONFIG_YAML), source: "built-in defaults" };
-  return { config: parseConfig(found.text), source: `${input2.configPath} on the default branch` };
+  return { config: parseConfig(found.text), source: `${configPath} on the default branch` };
 }
 async function changedFiles(gh, pr) {
   const files = [];
@@ -10018,6 +10065,218 @@ function summaryMarkdown(prRef, result) {
 `;
 }
 
+// src/action/vouch.ts
+var NEW_LIST_PATH = ".github/VOUCHED.td";
+function parseVouchCommand(body) {
+  if (typeof body !== "string") return null;
+  const first = (body.split("\n", 1)[0] ?? "").trim();
+  if (first !== "/vouch" && !/^\/vouch[ \t]/.test(first)) return null;
+  const arg = first.slice("/vouch".length).trim();
+  if (arg === "") return { kind: "vouch", target: null };
+  const login = arg.startsWith("@") ? arg.slice(1) : arg;
+  return isLogin(login) ? { kind: "vouch", target: login } : { kind: "invalid" };
+}
+async function handleComment(gh, input2) {
+  const { repo, event, dryRun } = input2;
+  const log = input2.log ?? (() => {
+  });
+  const warnings = [];
+  const done = (outcome, reason, check = null) => {
+    log(`/vouch: ${outcome} (${reason})`);
+    return { outcome, reason, check, warnings };
+  };
+  if (event.action !== "created") return done("ignored", "only new comments are read, not edited or deleted ones");
+  const command2 = parseVouchCommand(event.comment?.body);
+  if (!command2) return done("ignored", "not a /vouch command");
+  const commenter = event.comment?.user?.login ?? "";
+  const commentId = event.comment?.id;
+  const number = event.issue?.number;
+  if (!isLogin(commenter) || event.comment?.user?.type === "Bot") return done("ignored", "bots cannot use /vouch");
+  if (event.sender?.login?.toLowerCase() !== commenter.toLowerCase()) {
+    return done("ignored", "the event's sender is not the comment's author");
+  }
+  if (typeof commentId !== "number" || typeof number !== "number") return done("ignored", "the event has no comment or issue");
+  const permission = await gh.rest(
+    "GET",
+    `/repos/${repo}/collaborators/${encodeURIComponent(commenter)}/permission`,
+    void 0,
+    [403, 404]
+  );
+  if (permission.status !== 200 || !WRITE_PERMISSIONS.has(permission.data?.permission ?? "")) {
+    return done("ignored", `@${commenter} does not have write access to ${repo}`);
+  }
+  const reply = async (text) => {
+    if (dryRun) return log(`Would reply: ${text}`);
+    try {
+      await gh.rest("POST", `/repos/${repo}/issues/${number}/comments`, { body: `@${commenter} ${text}` });
+    } catch (error) {
+      warnings.push(`Could not reply on #${number}: ${error.message}`);
+    }
+  };
+  const refuse = async (reason, text) => {
+    await reply(text);
+    return done("refused", reason);
+  };
+  try {
+    return await carryOut(command2);
+  } catch (error) {
+    const why = error.message;
+    await reply(`Something went wrong, and \`/vouch\` may not have finished: ${why}`);
+    return done("failed", `the command failed: ${why}`);
+  }
+  async function carryOut(command3) {
+    const isPullRequest = event.issue?.pull_request != null;
+    if (command3.kind === "invalid") {
+      return refuse("the command does not name one GitHub username", "`/vouch` takes one GitHub username, like `/vouch @octocat`. Nothing was changed.");
+    }
+    if (command3.target === null && !isPullRequest) {
+      return refuse("bare /vouch on an issue", "On an issue, name the account to vouch for, like `/vouch @octocat`. Nothing was changed.");
+    }
+    const issueAuthor = event.issue?.user;
+    if (command3.target === null && isBotAccount(issueAuthor?.login ?? "", issueAuthor?.type ?? null)) {
+      return refuse("the author is a bot", "Bots do not need vouching: the contributor check skips them. Nothing was changed.");
+    }
+    const named = command3.target ?? issueAuthor?.login ?? "";
+    if (!isLogin(named)) return refuse("no author to vouch for", "This pull request's author account no longer exists. Nothing was changed.");
+    const user = await gh.rest("GET", `/users/${encodeURIComponent(named)}`, void 0, [404]);
+    if (user.status === 404 || !user.data?.login) {
+      return refuse(`no account named ${named}`, `There is no GitHub account named \`${named}\`. Nothing was changed.`);
+    }
+    if (user.data.type !== "User") {
+      return refuse(`${named} is not a user account`, `\`${user.data.login}\` is not a personal account (it is a ${String(user.data.type).toLowerCase()}), so it cannot be vouched for. Nothing was changed.`);
+    }
+    const login = user.data.login;
+    if (!isLogin(login)) return refuse(`unexpected login ${JSON.stringify(login)}`, "GitHub returned an unexpected username. Nothing was changed.");
+    let rules;
+    try {
+      rules = await loadRules(gh, repo, input2.configPath);
+    } catch (error) {
+      await reply(`Could not read this project's rules (${input2.configPath}), so nothing was changed: ${error.message}`);
+      return done("failed", `could not read the rules: ${error.message}`);
+    }
+    if (!rules.config.ownList) {
+      return refuse(
+        "own_list is none",
+        `This project's rules set \`own_list: none\`, so there is no trust list to add \`${login}\` to. Nothing was changed. To vouch from comments, set \`own_list\` to \`auto\` or a file path in \`${input2.configPath}\`.`
+      );
+    }
+    const configured = rules.config.ownList.path;
+    if (configured !== null && !isSafePath(configured)) {
+      return refuse(`own_list path ${JSON.stringify(configured)} is not a plain file path`, `\`own_list\` in \`${input2.configPath}\` is not a plain file path in this repository, so nothing was changed.`);
+    }
+    const message = `Vouch for @${login}
+
+@${commenter} vouched for @${login} with /vouch in #${number}.
+`;
+    let written = null;
+    let already = null;
+    let lastError = null;
+    let path = configured ?? NEW_LIST_PATH;
+    for (let attempt = 1; attempt <= 2 && !written && !already; attempt++) {
+      let current;
+      try {
+        current = await readList(gh, repo, configured);
+      } catch (error) {
+        lastError = error;
+        break;
+      }
+      path = current.path;
+      const edit = addVouch(current.text, login);
+      if (edit.result === "denounced") {
+        return refuse(
+          `${login} is denounced in ${path}`,
+          `\`${login}\` is denounced in \`${path}\`, and \`/vouch\` does not overturn a denouncement. Nothing was changed. If you want to vouch for them, remove their \`-\` line from \`${path}\` on the default branch first.`
+        );
+      }
+      if (edit.result === "already-vouched") {
+        already = { path, text: current.text };
+        break;
+      }
+      if (dryRun) {
+        log(`Would add ${login} to ${path} (commit "${message.split("\n", 1)[0]}")`);
+        written = { path, text: edit.text };
+        break;
+      }
+      const put = await gh.rest(
+        "PUT",
+        `/repos/${repo}/contents/${encodePath(path)}`,
+        { message, content: Buffer.from(edit.text, "utf8").toString("base64"), ...current.sha ? { sha: current.sha } : {} },
+        [403, 404, 409, 422]
+      );
+      if (put.status === 200 || put.status === 201) written = { path, text: edit.text };
+      else {
+        lastError = new GitHubError(`${put.status} ${put.data?.message ?? ""}`.trim(), put.status);
+        const conflict = put.status === 409 || put.status === 422;
+        log(`Writing ${path} failed (${lastError.message})${conflict && attempt === 1 ? "; reading it again and retrying once" : ""}`);
+        if (!conflict) break;
+      }
+    }
+    if (!written && !already) {
+      await reply(writeFailureText(login, path, lastError));
+      return done("failed", `could not add ${login} to ${path}: ${lastError?.message ?? "unknown error"}`);
+    }
+    const result = written ?? already;
+    if (!dryRun) {
+      try {
+        await gh.rest("POST", `/repos/${repo}/issues/comments/${commentId}/reactions`, { content: "+1" });
+      } catch (error) {
+        warnings.push(`Could not react to the /vouch comment: ${error.message}`);
+      }
+    }
+    const outcome = written ? "vouched" : "already-vouched";
+    const reason = written ? `${dryRun ? "would add" : "added"} ${login} to ${result.path}, at @${commenter}'s request` : `${login} is already vouched for in ${result.path}`;
+    if (!isPullRequest || issueAuthor?.login?.toLowerCase() !== login.toLowerCase()) return done(outcome, reason);
+    try {
+      const { data } = await gh.rest("GET", `/repos/${repo}/pulls/${number}`);
+      const check = await runCheck(gh, {
+        pr: pullRequestFromApi(repo, data),
+        trigger: { action: "vouched", sender: commenter },
+        configPath: input2.configPath,
+        dryRun,
+        ownListText: result.text,
+        log
+      });
+      return done(outcome, `${reason}; check: ${check.status} (${check.reason})`, check);
+    } catch (error) {
+      warnings.push(`Vouched, but checking #${number} again failed: ${error.message}`);
+      return done(outcome, reason);
+    }
+  }
+}
+async function readList(gh, repo, configured) {
+  for (const path of configured ? [configured] : VOUCH_FILE_CANDIDATES) {
+    const { status, data } = await gh.rest(
+      "GET",
+      `/repos/${repo}/contents/${encodePath(path)}`,
+      void 0,
+      [404]
+    );
+    if (status === 404) continue;
+    if (data?.type !== "file" || typeof data.sha !== "string") throw new Error(`${path} is not a file`);
+    if (data.encoding !== "base64" || typeof data.content !== "string") throw new Error(`${path} is too large to edit through the API`);
+    return { path, text: Buffer.from(data.content, "base64").toString("utf8"), sha: data.sha };
+  }
+  return { path: configured ?? NEW_LIST_PATH, text: null, sha: null };
+}
+function isSafePath(path) {
+  return path.split("/").every((part) => part !== "" && part !== "." && part !== "..") && !/[\0\\]/.test(path);
+}
+function encodePath(path) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+function writeFailureText(login, path, error) {
+  const status = error instanceof GitHubError ? error.status : null;
+  const what = `Could not add \`${login}\` to \`${path}\`${error ? ` (GitHub said: ${error.message})` : ""}, so nothing was changed.`;
+  const byHand = `add the line \`${login.toLowerCase()}\` to \`${path}\` on the default branch yourself, then comment \`/vouch\` again to re-run the check.`;
+  if (status === 403 || status === 404) {
+    return `${what} The workflow's token cannot write to the repository: give the workflow \`permissions: contents: write\`, or ${byHand}`;
+  }
+  if (status === 409 || status === 422) {
+    return `${what} If the default branch is protected, let GitHub Actions push to it, or ${byHand}`;
+  }
+  return `${what} Try again, or ${byHand}`;
+}
+
 // src/action/main.ts
 function input(name) {
   return (process.env[`INPUT_${name.replace(/ /g, "_").toUpperCase()}`] ?? "").trim();
@@ -10047,6 +10306,32 @@ async function main() {
   const repo = process.env.GITHUB_REPOSITORY ?? "";
   const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(import_node_fs.default.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")) : {};
   const gh = createClient({ token, userAgent: "pr-trust-action", log: (m) => console.log(m) });
+  const configPath = input("config") || ".github/trust.yml";
+  const dryRun = input("dry-run") === "true";
+  if (process.env.GITHUB_EVENT_NAME === "issue_comment") {
+    const result2 = await handleComment(gh, { repo, event, configPath, dryRun, log: (m) => console.log(m) });
+    const check = result2.check;
+    setOutput("command", result2.outcome === "ignored" ? "" : result2.outcome);
+    setOutput("status", check?.status ?? (result2.outcome === "failed" ? "error" : "skipped"));
+    setOutput("reason", result2.reason);
+    if (check) {
+      setOutput("admitted", String(["admitted", "exempt", "skipped"].includes(check.status)));
+      setOutput("rule", check.rule ?? "");
+    }
+    for (const warning of [...result2.warnings, ...check?.warnings ?? []]) command("warning", warning);
+    if (result2.outcome === "ignored") return 0;
+    if (process.env.GITHUB_STEP_SUMMARY) {
+      const lines = [`### /vouch: ${result2.outcome}`, "", result2.reason, ""];
+      if (check) lines.push(summaryMarkdown(`#${event.issue?.number}`, check));
+      import_node_fs.default.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}
+`);
+    }
+    if (result2.outcome === "failed") {
+      command("error", `/vouch failed: ${result2.reason}`);
+      return input("fail-on-error") === "true" ? 1 : 0;
+    }
+    return 0;
+  }
   let pr;
   const number = input("pr-number");
   if (number) {
@@ -10059,7 +10344,7 @@ async function main() {
   } else if (event.pull_request) {
     pr = pullRequestFromApi(event.pull_request.base?.repo?.full_name ?? repo, event.pull_request);
   } else {
-    command("error", "This event has no pull request. Run on pull_request_target, or set the pr-number input.");
+    command("error", "This event has no pull request. Run on pull_request_target or issue_comment, or set the pr-number input.");
     return 1;
   }
   const pretend = input("as-author");
@@ -10075,8 +10360,8 @@ async function main() {
   const result = await runCheck(gh, {
     pr,
     trigger: { action: event.action ?? null, sender: event.sender?.login ?? null },
-    configPath: input("config") || ".github/trust.yml",
-    dryRun: input("dry-run") === "true",
+    configPath,
+    dryRun,
     log: (m) => console.log(m)
   });
   const admitted = ["admitted", "exempt", "skipped"].includes(result.status);

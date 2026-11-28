@@ -1,0 +1,27 @@
+# .github/workflows/pr-trust.yml, with the /vouch command turned on.
+# A maintainer (write access or more) comments "/vouch" on a pull request to add its author
+# to your Vouch list, or "/vouch @login" on any pull request or issue to add that account.
+# The Action commits the line to your list on the default branch and checks the pull
+# request again. Without the issue_comment trigger below, there is no /vouch command.
+name: Contributor trust
+
+on:
+  pull_request_target: # runs with write access even for PRs from forks; never checks out PR code
+    types: [opened, reopened]
+  issue_comment: # only new comments; edits are ignored
+    types: [created]
+
+permissions:
+  contents: write # commit to your trust list (.github/VOUCHED.td or own_list's path)
+  pull-requests: write
+  issues: write # reply to and react on /vouch comments on issues
+
+jobs:
+  check:
+    # Most comments are not commands; skip those without starting a runner.
+    if: github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/vouch')
+    runs-on: ubuntu-latest
+    steps:
+      # Pin to a release commit; replace the hash with the release you use.
+      # /vouch needs a release newer than v0.1.1.
+      - uses: maxbenschop/pr-trust@00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6 # v0.1.1

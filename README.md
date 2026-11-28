@@ -79,6 +79,46 @@ It comes with two command-line tools:
 8. If the check itself fails (GitHub down, broken rules file), the PR gets a
    "trust: check failed" label and is **never closed**.
 
+## Vouching from a pull request
+
+Optionally, a maintainer can admit an author without leaving the pull request by
+commenting `/vouch`. The command only exists if your workflow also runs on new comments
+([full example](examples/workflow-with-vouch.yml)):
+
+```yaml
+on:
+  pull_request_target:
+    types: [opened, reopened]
+  issue_comment:
+    types: [created]
+permissions:
+  contents: write        # /vouch commits to your trust list
+  pull-requests: write
+  issues: write          # reply to and react on comments on issues
+jobs:
+  check:
+    # Most comments are not commands; skip those without starting a runner.
+    if: github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/vouch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: maxbenschop/pr-trust@<a release newer than v0.1.1>
+```
+
+- `/vouch` on a pull request vouches for its author; `/vouch @login` (or `/vouch login`) on
+  a pull request or an issue vouches for that account. Only the first line of a new comment
+  counts, and it must be exactly that.
+- Only people with write, maintain or admin permission can use it, checked with GitHub's API.
+  Anyone else's `/vouch` is ignored without a reply, as are bots and edited comments.
+- The account is added to your own list on the default branch (where `own_list` points, or a
+  new `.github/VOUCHED.td`), one line in Vouch's own format, in a commit that says who vouched
+  for whom. The comment gets a +1 reaction, and the pull request is checked again, so its
+  label and comment change to admitted. A closed pull request is not reopened; reopen it and
+  the check runs again.
+- Nothing is written if the account is already vouched for (the pull request is still
+  checked again), or if it is denounced: `/vouch` never overturns a denouncement, and says so.
+- If it cannot write (`own_list: none`, no `contents: write`, a protected default branch),
+  it replies saying what to do instead. It never changes the pull request in that case.
+
 ## Rules reference
 
 All keys are optional. See [`examples/trust.yml`](examples/trust.yml) for a commented example.
@@ -110,7 +150,7 @@ people trusted by the projects it trusts.
 
 | Input | Default | |
 |---|---|---|
-| `github-token` | `${{ github.token }}` | Needs `pull-requests: write` to label, comment and close |
+| `github-token` | `${{ github.token }}` | Needs `pull-requests: write` to label, comment and close; `/vouch` also needs `contents: write` |
 | `config` | `.github/trust.yml` | Rules file on the default branch |
 | `dry-run` | `false` | Decide and report, change nothing |
 | `pr-number` | from the event | Check another PR, for example from `workflow_dispatch` |
@@ -123,6 +163,7 @@ people trusted by the projects it trusts.
 | `admitted` | `"true"` for admitted, exempt or skipped |
 | `reason` | One line, such as `3 merged PRs in rust-lang/rust` |
 | `rule` | The rule that admitted the author |
+| `command` | On a comment: `vouched`, `already-vouched`, `refused` or `failed` for a maintainer's `/vouch`, else empty |
 
 Each run also writes a short table to the job summary.
 
@@ -194,7 +235,7 @@ The Action:
   find at all, it reads the author's own merged PRs instead, up to 500 of them; if that is
   not enough to decide, the rule counts only what it read and a warning says so.
 - It acts on the PR's state when the event fired. A PR edited later is not checked again
-  unless it is reopened.
+  unless it is reopened, or a maintainer comments `/vouch`.
 - It needs `pull_request_target`. With `pull_request`, PRs from forks get a read-only token,
   so labelling fails and the check reports an error.
 

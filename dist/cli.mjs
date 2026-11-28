@@ -9407,11 +9407,15 @@ function parseVouchFile(text) {
   for (const login of denounced) vouched.delete(login);
   return { vouched, denounced };
 }
-var EMPTY_LIST;
+function isLogin(value) {
+  return LOGIN.test(value);
+}
+var EMPTY_LIST, LOGIN;
 var init_vouchfile = __esm({
   "src/engine/vouchfile.ts"() {
     "use strict";
     EMPTY_LIST = { vouched: /* @__PURE__ */ new Set(), denounced: /* @__PURE__ */ new Set() };
+    LOGIN = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
   }
 });
 
@@ -9977,7 +9981,7 @@ function liveSources(gh, options) {
   return {
     warnings,
     async ownList(login) {
-      const list = await loadList2({ repo: options.repo, path: options.ownListPath }, options.ownListPath !== null);
+      const list = options.ownListText != null ? parseVouchFile(options.ownListText) : await loadList2({ repo: options.repo, path: options.ownListPath }, options.ownListPath !== null);
       const key = normalizeLogin(login);
       if (list.denounced.has(key)) return "denounced";
       return list.vouched.has(key) ? "vouched" : "unknown";
@@ -9986,7 +9990,7 @@ function liveSources(gh, options) {
       return (await loadList2(source)).vouched.has(normalizeLogin(login));
     },
     async mergedCount(named, login, from, to, min) {
-      if (!LOGIN.test(login)) return 0;
+      if (!isLogin(login)) return 0;
       const merges = (repo2) => count(`repo:${repo2} is:pr is:merged author:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`);
       let repo = named;
       let n = await merges(repo);
@@ -10021,14 +10025,13 @@ function liveSources(gh, options) {
     }
   };
 }
-var LOGIN, FALLBACK_MAX_PAGES;
+var FALLBACK_MAX_PAGES;
 var init_live = __esm({
   "src/action/live.ts"() {
     "use strict";
     init_config();
     init_vouchfile();
     init_queries();
-    LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
     FALLBACK_MAX_PAGES = 5;
   }
 });
@@ -10075,7 +10078,11 @@ async function runCheck(gh, input) {
       warnings.push(`No rules found at ${input.configPath} on the default branch; using the built-in defaults.`);
     }
     const changedPaths = config.exemptPaths.length > 0 ? await changedFiles(gh, pr) : null;
-    const sources = liveSources(gh, { repo: pr.repo, ownListPath: config.ownList?.path ?? null });
+    const sources = liveSources(gh, {
+      repo: pr.repo,
+      ownListPath: config.ownList?.path ?? null,
+      ownListText: input.ownListText
+    });
     const decision = await evaluate(
       { config, repo: pr.repo, login: pr.author, at: input.now ?? /* @__PURE__ */ new Date(), changedPaths },
       sources
@@ -10122,9 +10129,12 @@ async function hasWriteAccess(gh, pr) {
 }
 async function loadConfig(gh, input) {
   if (input.configText != null) return { config: parseConfig(input.configText), source: "provided file" };
-  const found = await readFirstFile(gh, input.pr.repo, [input.configPath]);
+  return loadRules(gh, input.pr.repo, input.configPath);
+}
+async function loadRules(gh, repo, configPath) {
+  const found = await readFirstFile(gh, repo, [configPath]);
   if (!found) return { config: parseConfig(DEFAULT_CONFIG_YAML), source: "built-in defaults" };
-  return { config: parseConfig(found.text), source: `${input.configPath} on the default branch` };
+  return { config: parseConfig(found.text), source: `${configPath} on the default branch` };
 }
 async function changedFiles(gh, pr) {
   const files = [];
@@ -10273,6 +10283,7 @@ var init_check = __esm({
     init_config();
     init_duration();
     init_rules();
+    init_vouchfile();
     init_live();
     COMMENT_MARKER = "<!-- pr-trust -->";
     WRITE_PERMISSIONS = /* @__PURE__ */ new Set(["admin", "maintain", "write"]);

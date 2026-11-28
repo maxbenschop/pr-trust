@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { asAuthor, COMMENT_MARKER, DEFAULT_MESSAGE, describeWaysToPass, planActions, renderMessage, runCheck, type PullRequestInfo } from "../src/action/check.ts";
 import { FALLBACK_MAX_PAGES } from "../src/action/live.ts";
 import { summaryMarkdown } from "../src/action/report.ts";
+import { handleComment, parseVouchCommand, type CommentEvent } from "../src/action/vouch.ts";
+import { NEW_VOUCH_FILE_HEADER } from "../src/engine/vouchfile.ts";
 import { parseConfig } from "../src/engine/config.ts";
 import type { GitHubClient, RestResponse } from "../src/github/client.ts";
 
@@ -18,9 +20,20 @@ function fakeGitHub(world: {
   authorPRs?: Record<string, { number: number; repo: string; mergedAt: string; updatedAt: string }[]>; // newest first
   failAuthorPRs?: boolean;
   renamed?: Record<string, string>; // old "owner/repo" -> current name
+  permissions?: Record<string, string>; // per login, overriding `permission`
+  users?: Record<string, string>; // existing accounts: login -> type
+  pulls?: Record<number, Record<string, unknown>>;
+  putStatus?: number; // every contents write fails with this status
+  concurrentEdit?: string; // a line another commit adds just before our first write
+  staleReads?: boolean; // GraphQL keeps returning files as they were before any write
 }) {
   const calls: Call[] = [];
   const graphqlCalls: string[] = [];
+  const files: Record<string, string> = { ...world.files };
+  const before = { ...world.files };
+  const shas = new Map<string, number>();
+  const sha = (key: string) => `sha-${key}-${shas.get(key) ?? 0}`;
+  let concurrentEdit = world.concurrentEdit;
   const gh: GitHubClient = {
     stats: { requests: 0, cached: 0 },
     async graphql<T>(query: string, variables: Record<string, unknown> = {}) {
@@ -48,21 +61,53 @@ function fakeGitHub(world: {
       if (query.includes("nameWithOwner")) return { repository: { nameWithOwner: world.renamed?.[repo] ?? repo } } as T;
       const repository: Record<string, unknown> = {};
       for (const [, alias, path] of query.matchAll(/(f\d+): object\(expression: "HEAD:([^"]+)"\)/g)) {
-        const text = world.files?.[`${repo}:${path}`];
+        const text = (world.staleReads ? before : files)[`${repo}:${path}`];
         repository[alias!] = text === undefined ? null : { text };
       }
       return { repository } as T;
     },
     async rest<T>(method: string, path: string, body?: unknown): Promise<RestResponse<T>> {
       calls.push({ method, path, body });
-      if (path.includes("/permission")) return { status: 200, data: { permission: world.permission ?? "read" } as T };
+      if (path.includes("/permission")) {
+        const login = decodeURIComponent(/collaborators\/([^/]+)/.exec(path)![1]!);
+        return { status: 200, data: { permission: world.permissions?.[login] ?? world.permission ?? "read" } as T };
+      }
+      const contents = /^\/repos\/([^/]+\/[^/]+)\/contents\/(.+)$/.exec(path);
+      if (contents) {
+        const key = `${contents[1]}:${contents[2]!.split("/").map(decodeURIComponent).join("/")}`;
+        if (method === "GET") {
+          const text = files[key];
+          if (text === undefined) return { status: 404, data: { message: "Not Found" } as T };
+          return { status: 200, data: { type: "file", sha: sha(key), encoding: "base64", content: Buffer.from(text).toString("base64") } as T };
+        }
+        if (world.putStatus) return { status: world.putStatus, data: { message: "Resource not accessible by integration" } as T };
+        if (concurrentEdit !== undefined) {
+          files[key] = `${files[key] ?? ""}${concurrentEdit}\n`;
+          shas.set(key, (shas.get(key) ?? 0) + 1);
+          concurrentEdit = undefined;
+        }
+        const put = body as { content: string; sha?: string; message: string };
+        const exists = files[key] !== undefined;
+        if (exists && put.sha !== sha(key)) return { status: 409, data: { message: "is at another sha" } as T };
+        if (!exists && put.sha) return { status: 409, data: { message: "file was deleted" } as T };
+        files[key] = Buffer.from(put.content, "base64").toString("utf8");
+        shas.set(key, (shas.get(key) ?? 0) + 1);
+        return { status: exists ? 200 : 201, data: {} as T };
+      }
+      if (path.startsWith("/users/")) {
+        const login = decodeURIComponent(path.slice("/users/".length));
+        const found = Object.entries(world.users ?? {}).find(([l]) => l.toLowerCase() === login.toLowerCase());
+        return found ? { status: 200, data: { login: found[0], type: found[1] } as T } : { status: 404, data: null as T };
+      }
+      const pull = /\/pulls\/(\d+)$/.exec(path);
+      if (method === "GET" && pull) return { status: 200, data: world.pulls?.[Number(pull[1])] as T };
       if (method === "GET" && path.includes("/labels/")) return { status: 404, data: null as T };
       if (method === "GET" && path.includes("/comments")) return { status: 200, data: (world.comments ?? []) as T };
       return { status: 200, data: {} as T };
     },
   };
   const writes = () => calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path.replace("/repos/me/repo", "")}`);
-  return { gh, calls, writes, graphqlCalls };
+  return { gh, calls, writes, graphqlCalls, files };
 }
 
 const pr = (overrides: Partial<PullRequestInfo> = {}): PullRequestInfo => ({
@@ -326,5 +371,180 @@ describe("asAuthor", () => {
   it("rejects anything that is not a username", () => {
     expect(() => asAuthor(pr, "a b")).toThrow(/GitHub username/);
     expect(() => asAuthor(pr, "x".repeat(40))).toThrow();
+  });
+});
+
+describe("parseVouchCommand", () => {
+  it("accepts /vouch, /vouch @login and /vouch login on the first line", () => {
+    expect(parseVouchCommand("/vouch")).toEqual({ kind: "vouch", target: null });
+    expect(parseVouchCommand("  /vouch  \r\nthanks for the fix")).toEqual({ kind: "vouch", target: null });
+    expect(parseVouchCommand("/vouch @Octo-Cat")).toEqual({ kind: "vouch", target: "Octo-Cat" });
+    expect(parseVouchCommand("/vouch\toctocat\n\nmore text")).toEqual({ kind: "vouch", target: "octocat" });
+  });
+
+  it("ignores everything else", () => {
+    for (const body of [
+      "", "vouch", "/Vouch", "/vouched", "/vouch@octocat", "lgtm\n/vouch", "\n/vouch",
+      "> /vouch", "`/vouch`", "please /vouch", undefined, null, 42,
+    ]) {
+      expect(parseVouchCommand(body)).toBeNull();
+    }
+  });
+
+  it("marks /vouch followed by anything but one username as invalid", () => {
+    for (const body of [
+      "/vouch @", "/vouch @@octocat", "/vouch octocat please", "/vouch @a @b", "/vouch -octocat",
+      "/vouch ../../etc", "/vouch a/b", "/vouch $(rm -rf /)", "/vouch renovate[bot]", `/vouch ${"x".repeat(40)}`,
+    ]) {
+      expect(parseVouchCommand(body)).toEqual({ kind: "invalid" });
+    }
+  });
+});
+
+describe("handleComment", () => {
+  const event = (overrides: Partial<CommentEvent> & { body?: string; by?: string; on?: "pr" | "issue" } = {}): CommentEvent => {
+    const by = overrides.by ?? "maint";
+    return {
+      action: "created",
+      comment: { id: 99, body: overrides.body ?? "/vouch", user: { login: by, type: "User" } },
+      issue: { number: 7, user: { login: "newbie", type: "User" }, ...(overrides.on === "issue" ? {} : { pull_request: {} }) },
+      sender: { login: by, type: "User" },
+      ...overrides,
+    };
+  };
+  const world = (extra: Parameters<typeof fakeGitHub>[0] = {}) =>
+    fakeGitHub({
+      permissions: { maint: "maintain" },
+      users: { NewBie: "User", maint: "User", "some-org": "Organization" },
+      pulls: { 7: { number: 7, state: "open", user: { login: "newbie", type: "User" }, author_association: "NONE", labels: [{ name: "trust: unknown" }], changed_files: 1 } },
+      ...extra,
+      files: { "me/repo:.github/trust.yml": "own_list: auto\n", ...extra.files },
+    });
+  const run = (gh: ReturnType<typeof fakeGitHub>["gh"], e: CommentEvent, dryRun = false) =>
+    handleComment(gh, { repo: "me/repo", event: e, configPath: ".github/trust.yml", dryRun });
+  const replies = (calls: Call[]) =>
+    calls.filter((c) => c.method === "POST" && c.path.endsWith("/issues/7/comments")).map((c) => (c.body as { body: string }).body);
+
+  it("ignores ordinary comments without a single API call", async () => {
+    const { gh, calls, graphqlCalls } = world();
+    for (const body of ["Looks good!", "lgtm", "/vouchsafe", "> /vouch"]) {
+      expect(await run(gh, event({ body }))).toMatchObject({ outcome: "ignored", reason: "not a /vouch command" });
+    }
+    expect(await run(gh, event({ action: "edited" }))).toMatchObject({ outcome: "ignored" });
+    expect(calls).toEqual([]);
+    expect(graphqlCalls).toEqual([]);
+  });
+
+  it("ignores bots and people without write access, silently and without writing", async () => {
+    const { gh, calls, writes } = world({ permissions: { maint: "maintain", helper: "triage", reader: "read" } });
+    const bot = { login: "github-actions[bot]", type: "Bot" };
+    expect(await run(gh, event({ comment: { id: 99, body: "/vouch", user: bot }, sender: bot }))).toMatchObject({ outcome: "ignored" });
+    expect(calls).toEqual([]); // decided before asking GitHub anything
+    for (const by of ["helper", "reader", "newbie"]) {
+      expect(await run(gh, event({ by, body: "/vouch @newbie" }))).toMatchObject({ outcome: "ignored", reason: `@${by} does not have write access to me/repo` });
+    }
+    // An OWNER association in the payload counts for nothing; only the permission API does.
+    const spoof = event({ by: "reader" });
+    expect(await run(gh, { ...spoof, comment: { ...spoof.comment, author_association: "OWNER" } as CommentEvent["comment"] })).toMatchObject({ outcome: "ignored" });
+    expect(writes()).toEqual([]);
+  });
+
+  it("adds the PR author to a new .github/VOUCHED.td, reacts, and checks the PR again", async () => {
+    // staleReads: reading the list back would still find nothing, so the re-check must use the new text.
+    const { gh, calls, writes, files } = world({ staleReads: true });
+    const result = await run(gh, event());
+    expect(result.outcome).toBe("vouched");
+    expect(files["me/repo:.github/VOUCHED.td"]).toBe(`${NEW_VOUCH_FILE_HEADER}newbie\n`);
+    const put = calls.find((c) => c.method === "PUT")!;
+    expect(put.path).toBe("/repos/me/repo/contents/.github/VOUCHED.td");
+    expect((put.body as { message: string; sha?: string }).message).toBe("Vouch for @NewBie\n\n@maint vouched for @NewBie with /vouch in #7.\n");
+    expect((put.body as { sha?: string }).sha).toBeUndefined();
+    expect(result.check).toMatchObject({ status: "admitted", reason: "vouched in this project's own list" });
+    expect(writes()).toEqual([
+      "PUT /contents/.github/VOUCHED.td",
+      "POST /issues/comments/99/reactions",
+      "DELETE /issues/7/labels/trust%3A%20unknown",
+      "POST /labels",
+      "POST /issues/7/labels",
+    ]);
+    expect(replies(calls)).toEqual([]);
+  });
+
+  it("vouches a named account into the existing list where own_list points", async () => {
+    const { gh, calls, files } = world({
+      users: { Octocat: "User" },
+      files: { "me/repo:.github/trust.yml": "own_list: docs/TRUST.td\n", "me/repo:docs/TRUST.td": "# ours\nalice\nzed\n" },
+    });
+    const result = await run(gh, event({ body: "/vouch @octocat", on: "issue" }));
+    expect(result).toMatchObject({ outcome: "vouched", check: null });
+    expect(files["me/repo:docs/TRUST.td"]).toBe("# ours\nalice\noctocat\nzed\n");
+    expect((calls.find((c) => c.method === "PUT")!.body as { sha?: string }).sha).toBe("sha-me/repo:docs/TRUST.td-0");
+    expect(calls.some((c) => c.path.includes("/pulls/"))).toBe(false); // an issue: nothing to re-check
+  });
+
+  it("does not write when the account is already vouched, but still re-checks the PR", async () => {
+    const { gh, writes } = world({ files: { "me/repo:VOUCHED.td": "github:newbie\n" } });
+    const result = await run(gh, event());
+    expect(result).toMatchObject({ outcome: "already-vouched", reason: expect.stringContaining("already vouched for in VOUCHED.td") });
+    expect(result.check?.status).toBe("admitted");
+    expect(writes().filter((w) => w.startsWith("PUT"))).toEqual([]);
+    expect(writes()[0]).toBe("POST /issues/comments/99/reactions");
+  });
+
+  it("refuses to overturn a denouncement", async () => {
+    const { gh, calls, writes } = world({ files: { "me/repo:.github/VOUCHED.td": "-newbie spam\n" } });
+    const result = await run(gh, event());
+    expect(result.outcome).toBe("refused");
+    expect(writes()).toEqual(["POST /issues/7/comments"]);
+    expect(replies(calls)[0]).toContain("`NewBie` is denounced in `.github/VOUCHED.td`");
+  });
+
+  it("replies instead of writing for own_list: none, unknown accounts, organisations and bad usernames", async () => {
+    const cases: [Parameters<typeof fakeGitHub>[0], CommentEvent, string][] = [
+      [{ files: { "me/repo:.github/trust.yml": "own_list: none\n" } }, event(), "`own_list: none`"],
+      [{}, event({ body: "/vouch @ghost-user" }), "There is no GitHub account named `ghost-user`"],
+      [{}, event({ body: "/vouch some-org" }), "not a personal account (it is a organization)"],
+      [{}, event({ body: "/vouch @a b" }), "`/vouch` takes one GitHub username"],
+      [{}, event({ on: "issue" }), "On an issue, name the account"],
+    ];
+    for (const [extra, e, text] of cases) {
+      const { gh, calls, writes } = world(extra);
+      expect((await run(gh, e)).outcome).toBe("refused");
+      expect(writes()).toEqual(["POST /issues/7/comments"]);
+      expect(replies(calls)[0]).toContain(text);
+      expect(replies(calls)[0]!.startsWith("@maint ")).toBe(true);
+    }
+  });
+
+  it("retries once on a fresh read when another commit changed the list meanwhile", async () => {
+    const { gh, calls, files } = world({ files: { "me/repo:.github/VOUCHED.td": "alice\n" }, concurrentEdit: "zed" });
+    const result = await run(gh, event());
+    expect(result.outcome).toBe("vouched");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(2);
+    expect(files["me/repo:.github/VOUCHED.td"]).toBe("alice\nnewbie\nzed\n");
+    expect(result.check?.status).toBe("admitted");
+  });
+
+  it("explains what to do when it cannot write, and never touches the PR", async () => {
+    const { gh, calls, writes } = world({ putStatus: 403 });
+    const result = await run(gh, event());
+    expect(result.outcome).toBe("failed");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(1); // no retry for a missing permission
+    expect(writes()).toEqual(["PUT /contents/.github/VOUCHED.td", "POST /issues/7/comments"]);
+    expect(replies(calls)[0]).toContain("`permissions: contents: write`");
+    expect(replies(calls)[0]).toContain("add the line `newbie` to `.github/VOUCHED.td`");
+
+    const blocked = world({ putStatus: 409 });
+    expect((await run(blocked.gh, event())).outcome).toBe("failed");
+    expect(blocked.calls.filter((c) => c.method === "PUT")).toHaveLength(2);
+    expect(replies(blocked.calls)[0]).toContain("If the default branch is protected");
+  });
+
+  it("writes nothing in a dry run", async () => {
+    const { gh, writes } = world();
+    const result = await run(gh, event(), true);
+    expect(result).toMatchObject({ outcome: "vouched", reason: expect.stringContaining("would add NewBie") });
+    expect(result.check?.status).toBe("admitted");
+    expect(writes()).toEqual([]);
   });
 });

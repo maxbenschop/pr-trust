@@ -1,6 +1,6 @@
 import { listKey, VOUCH_FILE_CANDIDATES, type ListRef } from "../engine/config.ts";
 import type { ListStatus, TrustSources } from "../engine/rules.ts";
-import { EMPTY_LIST, normalizeLogin, parseVouchFile, type VouchList } from "../engine/vouchfile.ts";
+import { EMPTY_LIST, isLogin, normalizeLogin, parseVouchFile, type VouchList } from "../engine/vouchfile.ts";
 import type { GraphQLClient } from "../github/client.ts";
 import { countAuthorMerges, isoSeconds } from "../github/queries.ts";
 
@@ -36,8 +36,6 @@ export async function readFirstFile(
   return index === -1 ? null : { path: paths[index]!, text: texts[index]! };
 }
 
-const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-
 /**
  * Pages of 100 of the author's merged PRs to walk when a repository is missing from the
  * search index. Five pages is at most five extra requests per `merged` rule per check.
@@ -49,8 +47,15 @@ export type LiveSources = TrustSources & {
   warnings: string[];
 };
 
-/** Trust facts as they stand now. Each list and search runs at most once per check. */
-export function liveSources(gh: GraphQLClient, options: { repo: string; ownListPath: string | null }): LiveSources {
+/**
+ * Trust facts as they stand now. Each list and search runs at most once per check.
+ * `ownListText` is the project's own list as just written by `/vouch`, used instead of
+ * reading it back, which might still return the version before the commit.
+ */
+export function liveSources(
+  gh: GraphQLClient,
+  options: { repo: string; ownListPath: string | null; ownListText?: string | null },
+): LiveSources {
   const warnings: string[] = [];
   const lists = new Map<string, Promise<VouchList>>();
   const searchable = new Map<string, Promise<boolean>>();
@@ -114,7 +119,10 @@ export function liveSources(gh: GraphQLClient, options: { repo: string; ownListP
   return {
     warnings,
     async ownList(login): Promise<ListStatus> {
-      const list = await loadList({ repo: options.repo, path: options.ownListPath }, options.ownListPath !== null);
+      const list =
+        options.ownListText != null
+          ? parseVouchFile(options.ownListText)
+          : await loadList({ repo: options.repo, path: options.ownListPath }, options.ownListPath !== null);
       const key = normalizeLogin(login);
       if (list.denounced.has(key)) return "denounced";
       return list.vouched.has(key) ? "vouched" : "unknown";
@@ -123,7 +131,7 @@ export function liveSources(gh: GraphQLClient, options: { repo: string; ownListP
       return (await loadList(source)).vouched.has(normalizeLogin(login));
     },
     async mergedCount(named, login, from, to, min) {
-      if (!LOGIN.test(login)) return 0;
+      if (!isLogin(login)) return 0;
       const merges = (repo: string) =>
         count(`repo:${repo} is:pr is:merged author:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`);
       let repo = named;

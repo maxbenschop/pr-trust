@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ConfigError, DEFAULT_LABELS, describeRule, parseConfig, parseListRef } from "../src/engine/config.ts";
 import { parseDuration, subtractDuration } from "../src/engine/duration.ts";
 import { evaluate, type TrustSources } from "../src/engine/rules.ts";
-import { parseVouchFile } from "../src/engine/vouchfile.ts";
+import { addVouch, NEW_VOUCH_FILE_HEADER, parseVouchFile } from "../src/engine/vouchfile.ts";
 
 describe("parseVouchFile", () => {
   it("reads vouched and denounced GitHub users, ignoring comments and other platforms", () => {
@@ -21,6 +21,42 @@ gitlab:carol
     const list = parseVouchFile("eve\n-eve\n");
     expect(list.vouched.has("eve")).toBe(false);
     expect(list.denounced.has("eve")).toBe(true);
+  });
+});
+
+describe("addVouch", () => {
+  it("starts a new list with Vouch's own header", () => {
+    expect(addVouch(null, "NewBie")).toEqual({ result: "added", text: `${NEW_VOUCH_FILE_HEADER}newbie\n` });
+    const text = (addVouch(null, "newbie") as { text: string }).text;
+    expect(parseVouchFile(text).vouched.has("newbie")).toBe(true);
+  });
+
+  it("inserts the bare lowercased login in sorted position, changing nothing else", () => {
+    const text = "# Our list\n\nalice\n-github:mallory spam\nzed\n";
+    expect(addVouch(text, "Ned")).toEqual({ result: "added", text: "# Our list\n\nalice\n-github:mallory spam\nned\nzed\n" });
+    expect(addVouch(text, "aaron")).toEqual({ result: "added", text: "# Our list\n\naaron\nalice\n-github:mallory spam\nzed\n" });
+    expect(addVouch(text, "zz")).toEqual({ result: "added", text: "# Our list\n\nalice\n-github:mallory spam\nzed\nzz\n" });
+  });
+
+  it("appends after the last entry when the list is not sorted, keeping line endings", () => {
+    expect(addVouch("github:zed\r\nalice\r\n# trailing note\r\n", "bob")).toEqual({
+      result: "added",
+      text: "github:zed\r\nalice\r\nbob\r\n# trailing note\r\n",
+    });
+    expect(addVouch("# only comments", "bob")).toEqual({ result: "added", text: "# only comments\nbob\n" });
+  });
+
+  it("leaves already vouched and denounced logins alone", () => {
+    expect(addVouch("github:NewBie\n", "newbie")).toEqual({ result: "already-vouched" });
+    expect(addVouch("newbie\n-newbie spam\n", "NEWBIE")).toEqual({ result: "denounced" });
+    // Another platform's entry is not this GitHub account.
+    expect(addVouch("gitlab:newbie\n", "newbie")).toMatchObject({ result: "added" });
+  });
+
+  it("refuses anything that is not a GitHub username", () => {
+    for (const bad of ["", "-x", "a b", "a/../b", "x".repeat(40), "bot[bot]", "a\nb"]) {
+      expect(() => addVouch("", bad)).toThrow(/not a GitHub username/);
+    }
   });
 });
 
@@ -163,5 +199,13 @@ exempt_paths: ["docs/**"]
     expect((await evaluate({ ...input, changedPaths: ["docs/a.md", "src/x.ts"] }, sources())).status).toBe("unknown");
     expect((await evaluate({ ...input, changedPaths: null }, sources())).status).toBe("unknown");
     expect((await evaluate({ ...input, changedPaths: [] }, sources())).status).toBe("unknown");
+  });
+});
+
+describe("addVouch style", () => {
+  it("keeps the github: prefix when every entry has it", async () => {
+    const { addVouch } = await import("../src/engine/vouchfile.ts");
+    expect(addVouch("# list\ngithub:zed\n", "Alice")).toEqual({ result: "added", text: "# list\ngithub:alice\ngithub:zed\n" });
+    expect(addVouch("github:zed\nbob\n", "alice")).toMatchObject({ result: "added", text: "github:zed\nbob\nalice\n" });
   });
 });

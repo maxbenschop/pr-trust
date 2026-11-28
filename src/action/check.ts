@@ -1,6 +1,7 @@
 import { DEFAULT_CONFIG_YAML, DEFAULT_LABELS, parseConfig, SELF, type Labels, type TrustConfig } from "../engine/config.ts";
 import { formatDuration } from "../engine/duration.ts";
 import { evaluate, type Decision } from "../engine/rules.ts";
+import { isLogin } from "../engine/vouchfile.ts";
 import type { GitHubClient } from "../github/client.ts";
 import { liveSources, readFirstFile } from "./live.ts";
 
@@ -49,11 +50,13 @@ export type CheckInput = {
   /** Rules to use instead of the repository's file (used by the CLI). */
   configText?: string | null;
   dryRun: boolean;
+  /** The project's own list as just written by `/vouch`; read from the default branch if absent. */
+  ownListText?: string | null;
   now?: Date;
   log?: (message: string) => void;
 };
 
-const WRITE_PERMISSIONS = new Set(["admin", "maintain", "write"]);
+export const WRITE_PERMISSIONS = new Set(["admin", "maintain", "write"]);
 const MAINTAINER_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
 export function pullRequestFromApi(repo: string, pr: Record<string, any>): PullRequestInfo {
@@ -73,15 +76,13 @@ export function isBotAccount(login: string, type: string | null): boolean {
   return type === "Bot" || /\[bot\]$/i.test(login);
 }
 
-const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-
 /**
  * For trying rules out: treat the pull request as if `login` had opened it, as an outside
  * contributor. The real author's write access and bot status no longer apply.
  */
 export function asAuthor(pr: PullRequestInfo, login: string): PullRequestInfo {
   const name = login.trim().replace(/^@/, "");
-  if (!LOGIN.test(name)) throw new Error(`as-author must be a GitHub username, got "${login}"`);
+  if (!isLogin(name)) throw new Error(`as-author must be a GitHub username, got "${login}"`);
   return { ...pr, author: name, authorType: "User", association: "NONE" };
 }
 
@@ -114,7 +115,11 @@ export async function runCheck(gh: GitHubClient, input: CheckInput): Promise<Che
     }
 
     const changedPaths = config.exemptPaths.length > 0 ? await changedFiles(gh, pr) : null;
-    const sources = liveSources(gh, { repo: pr.repo, ownListPath: config.ownList?.path ?? null });
+    const sources = liveSources(gh, {
+      repo: pr.repo,
+      ownListPath: config.ownList?.path ?? null,
+      ownListText: input.ownListText,
+    });
     const decision = await evaluate(
       { config, repo: pr.repo, login: pr.author, at: input.now ?? new Date(), changedPaths },
       sources,
@@ -167,9 +172,18 @@ async function hasWriteAccess(gh: GitHubClient, pr: PullRequestInfo): Promise<bo
 
 async function loadConfig(gh: GitHubClient, input: CheckInput): Promise<{ config: TrustConfig; source: string }> {
   if (input.configText != null) return { config: parseConfig(input.configText), source: "provided file" };
-  const found = await readFirstFile(gh, input.pr.repo, [input.configPath]);
+  return loadRules(gh, input.pr.repo, input.configPath);
+}
+
+/** The rules from the default branch, or the built-in defaults. Throws on a broken file. */
+export async function loadRules(
+  gh: GitHubClient,
+  repo: string,
+  configPath: string,
+): Promise<{ config: TrustConfig; source: string }> {
+  const found = await readFirstFile(gh, repo, [configPath]);
   if (!found) return { config: parseConfig(DEFAULT_CONFIG_YAML), source: "built-in defaults" };
-  return { config: parseConfig(found.text), source: `${input.configPath} on the default branch` };
+  return { config: parseConfig(found.text), source: `${configPath} on the default branch` };
 }
 
 async function changedFiles(gh: GitHubClient, pr: PullRequestInfo): Promise<string[] | null> {
