@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 (2026-11-28)
 
 - `as-author` input: check a pull request as if another account had opened it, to try out
   rules (for example from `workflow_dispatch`).
@@ -10,6 +10,8 @@
   the labels and how to get vouched: https://maxbenschop.github.io/pr-trust/contributors/
 - New website design, with real backtest results for ten projects and the live trust list
   directory wired into the rule builder.
+- `examples/strict.yml`: a "trusted only" preset that closes pull requests from unknown
+  authors.
 
 ## 0.1.0 (2026-11-27)
 
