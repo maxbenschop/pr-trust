@@ -10,6 +10,8 @@ A GitHub Action that checks who opened a pull request against rules you write, s
 It then labels the PR, and can comment and close it. It reads
 [Vouch](https://github.com/mitchellh/vouch)'s `VOUCHED.td` lists and works alongside Vouch.
 
+![Demo: an unknown author's pull request gets the "trust: unknown" label and a comment; a pull request from someone with merged work in rust-lang/rust gets "trust: admitted"](site/demo.gif)
+
 It comes with two command-line tools:
 
 - **`backtest`** replays a year of a repository's real PRs against your rules and shows
