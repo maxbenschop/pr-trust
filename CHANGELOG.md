@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `backtest --suggest`: tries extra rules on the PRs your rules left unknown and shows what
+  each would have let through, good and bad, with the best one or two as YAML to copy.
 - Three ways to recognise a newcomer who is not new to open source, each checked live by the
   Action and replayed by the backtest as of each PR's open time, checked by `validate`, and
   listed in the comment's "You pass this check when you" list:

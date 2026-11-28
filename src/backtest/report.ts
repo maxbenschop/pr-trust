@@ -151,11 +151,11 @@ function mergeRateOf(c: Counts): Rate {
   return rate(c.merged, c.merged + c.rejected + c.withdrawn);
 }
 
-function rate(part: number, whole: number): Rate {
+export function rate(part: number, whole: number): Rate {
   return { part, whole, value: whole === 0 ? null : part / whole };
 }
 
-const pct = (value: number | null) => (value === null ? "–" : `${Math.round(value * 100)}%`);
+export const pct = (value: number | null) => (value === null ? "–" : `${Math.round(value * 100)}%`);
 const num = (n: number) => n.toLocaleString("en-US");
 const plural = (n: number, one: string, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
 const ofWhole = (r: Rate) => `${pct(r.value)} (${num(r.part)} of ${num(r.whole)})`;
@@ -247,7 +247,7 @@ export function renderComparison(summaries: Summary[]): string {
   return renderTable(rows).join("\n");
 }
 
-function renderTable(rows: string[][]): string[] {
+export function renderTable(rows: string[][]): string[] {
   const widths = rows[0]!.map((_, col) => Math.max(...rows.map((r) => (r[col] ?? "").length)));
   return rows.map((r) =>
     r

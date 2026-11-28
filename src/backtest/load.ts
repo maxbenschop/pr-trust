@@ -148,7 +148,7 @@ export async function loadAuthorFacts(
   return result;
 }
 
-async function loadList(gh: GraphQLClient, ref: ListRef, log: Progress): Promise<ListHistory | null> {
+export async function loadList(gh: GraphQLClient, ref: ListRef, log: Progress): Promise<ListHistory | null> {
   const candidates = ref.path ? [ref.path] : VOUCH_FILE_CANDIDATES;
   for (const path of candidates) {
     log(`fetching history of ${ref.repo}:${path}`);

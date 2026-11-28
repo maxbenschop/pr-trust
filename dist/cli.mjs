@@ -11013,8 +11013,8 @@ function counts(rows) {
   return c;
 }
 function mergeRate(c) {
-  const decided = c.merged + c.rejected + c.withdrawn;
-  return decided === 0 ? null : c.merged / decided;
+  const decided2 = c.merged + c.rejected + c.withdrawn;
+  return decided2 === 0 ? null : c.merged / decided2;
 }
 function mergeRateOf(c) {
   return rate(c.merged, c.merged + c.rejected + c.withdrawn);
@@ -11122,6 +11122,365 @@ var init_report = __esm({
   }
 });
 
+// lists/catalog.json
+var catalog_default;
+var init_catalog = __esm({
+  "lists/catalog.json"() {
+    catalog_default = [
+      {
+        repo: "ghostty-org/ghostty"
+      },
+      {
+        repo: "mitchellh/vouch"
+      },
+      {
+        repo: "netbox-community/netbox"
+      },
+      {
+        repo: "cloudflare/workers-sdk"
+      },
+      {
+        repo: "juanfont/headscale"
+      },
+      {
+        repo: "triggerdotdev/trigger.dev"
+      },
+      {
+        repo: "hyprwm/.github",
+        path: "vouch/VOUCHED.td",
+        project: "hyprwm/Hyprland"
+      },
+      {
+        repo: "frappe/frappe"
+      },
+      {
+        repo: "frappe/erpnext"
+      },
+      {
+        repo: "huggingface/kernels"
+      },
+      {
+        repo: "DIYgod/RSSHub"
+      },
+      {
+        repo: "mem0ai/mem0"
+      },
+      {
+        repo: "hatchet-dev/hatchet"
+      },
+      {
+        repo: "slatedb/slatedb"
+      },
+      {
+        repo: "medplum/medplum"
+      },
+      {
+        repo: "golemcloud/golem"
+      },
+      {
+        repo: "emmett-framework/granian"
+      },
+      {
+        repo: "solidtime-io/solidtime"
+      },
+      {
+        repo: "mainsail-crew/mainsail"
+      },
+      {
+        repo: "ClickHouse/ClickStack"
+      },
+      {
+        repo: "humanlayer/humanlayer"
+      },
+      {
+        repo: "atuinsh/atuin"
+      }
+    ];
+  }
+});
+
+// src/backtest/catalog.ts
+var CATALOG_LISTS;
+var init_catalog2 = __esm({
+  "src/backtest/catalog.ts"() {
+    "use strict";
+    init_catalog();
+    CATALOG_LISTS = catalog_default.map((entry) => ({
+      repo: entry.repo,
+      path: entry.path ?? null
+    }));
+  }
+});
+
+// src/backtest/suggest.ts
+function candidateRules(config, repo) {
+  const rules = [];
+  const existing = new Set(config.admit.map(ruleYaml));
+  for (const min of [1, 3, 10]) {
+    const rule = { kind: "merged", repo: ANY, min, within: SUGGEST_WITHIN };
+    if (!existing.has(ruleYaml(rule))) rules.push(rule);
+  }
+  const listed = new Set(config.admit.flatMap((r) => r.kind === "list" ? [r.source.repo.toLowerCase()] : []));
+  if (config.ownList) listed.add(repo.toLowerCase());
+  for (const source of CATALOG_LISTS) {
+    if (!listed.has(source.repo.toLowerCase())) rules.push({ kind: "list", source });
+  }
+  return rules;
+}
+function decided(row) {
+  return row.group === "external" && row.decision !== null && (row.outcome === "merged" || row.outcome === "rejected");
+}
+function reachable(row) {
+  return decided(row) && row.decision?.status === "unknown" && !row.decision.heldBack;
+}
+async function loadSuggestionFacts(gh, input) {
+  const { config, rows, rules, from, to, maxAuthors } = input;
+  const log = input.log ?? (() => {
+  });
+  const notes = [];
+  const lists = new Map(input.data.lists);
+  const data = { ...input.data, lists };
+  const listRules = rules.filter((r) => r.kind === "list");
+  for (const [i, rule] of listRules.entries()) {
+    if (rule.kind !== "list" || lists.has(listKey(rule.source))) continue;
+    log(`suggest: trust list ${i + 1} of ${listRules.length}`);
+    lists.set(listKey(rule.source), await loadList(gh, rule.source, (m) => log(`  ${m}`)));
+  }
+  const missing = listRules.filter((r) => r.kind === "list" && !lists.get(listKey(r.source)));
+  if (missing.length > 0) {
+    notes.push(`No trust list found in ${missing.map((r) => r.kind === "list" ? r.source.repo : "").join(", ")}; those rules never match.`);
+  }
+  const perAuthor = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (!reachable(row)) continue;
+    const login = normalizeLogin(row.pr.author);
+    perAuthor.set(login, (perAuthor.get(login) ?? 0) + 1);
+  }
+  const needed = [...perAuthor].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([login]) => login);
+  const starts = [subtractDuration(from, SUGGEST_WITHIN), ...config.admit.flatMap((r) => r.kind === "merged" && r.repo === ANY ? [subtractDuration(from, r.within)] : [])];
+  const start = new Date(Math.min(...starts.map((d) => d.getTime())));
+  const covered = input.data.elsewhere !== void 0 && config.admit.some((r) => r.kind === "merged" && r.repo === ANY && subtractDuration(from, r.within) <= start);
+  let elsewhere = null;
+  let searched = needed.length;
+  if (!covered && rules.some((r) => r.kind === "merged" && r.repo === ANY) && needed.length > 0) {
+    const chosen = needed.slice(0, maxAuthors);
+    searched = chosen.length;
+    log(`suggest: searching merged PRs elsewhere for ${chosen.length} authors since ${start.toISOString().slice(0, 10)} (search allows about 30 requests a minute)`);
+    const found = [];
+    const authors = /* @__PURE__ */ new Set();
+    for (const [i, login] of chosen.entries()) {
+      if ((i + 1) % 10 === 0 || i + 1 === chosen.length) log(`  ${i + 1} of ${chosen.length} authors`);
+      try {
+        for (const mergedAt of await fetchMergedElsewhere(gh, login, start, to)) found.push({ author: login, mergedAt, mergedBy: null });
+        authors.add(login);
+      } catch (error) {
+        log(`  ${login}: ${error.message}`);
+      }
+    }
+    elsewhere = { index: new MergeIndex(found), authors };
+    notes.push(
+      "merged: { repo: any } reads GitHub search today: merges in repositories since deleted or made private are missed, and repository owners are today's."
+    );
+    if (authors.size < chosen.length) notes.push(`Merges elsewhere could not be searched for ${chosen.length - authors.size} author(s); for them "any" rules never matched.`);
+    if (needed.length > chosen.length) {
+      const left = new Set(needed.slice(chosen.length));
+      const prs = rows.filter((r) => reachable(r) && left.has(normalizeLogin(r.pr.author))).length;
+      notes.push(
+        `Capped: merges elsewhere were searched for ${chosen.length} of ${needed.length} authors (those with the most merged or rejected unknown PRs). The other ${left.size} authors' ${prs} PR(s) count as not matching, so gains and costs for merged: { repo: any } are lower bounds. Raise the cap with --suggest-authors.`
+      );
+    }
+  }
+  if (!config.minAccountAge) {
+    const everyone = [...new Set(rows.filter(decided).map((r) => normalizeLogin(r.pr.author)))];
+    log(`suggest: reading account creation dates for ${everyone.length} authors`);
+    data.accountCreated = await fetchAccountCreation(gh, everyone);
+  }
+  return { data, elsewhere, authors: { needed: needed.length, searched }, notes };
+}
+function suggestionSources(facts) {
+  const base = historicalSources(facts.data);
+  const own = facts.elsewhere;
+  if (!own) return base;
+  return {
+    ...base,
+    mergedElsewhereCount: (login, from, to, min) => {
+      if (own.authors.has(normalizeLogin(login))) return own.index.count(login, from, to);
+      return facts.data.elsewhere ? base.mergedElsewhereCount(login, from, to, min) : 0;
+    }
+  };
+}
+async function suggest(input) {
+  const { repo, config, summary, sources } = input;
+  const maintainers = input.maintainers ?? /* @__PURE__ */ new Set();
+  const all = input.rows.filter(decided);
+  const unknown = all.filter(reachable);
+  const allowedNow = { merged: summary.keeps.part, rejected: summary.stops.whole - summary.stops.part };
+  const allowedUnder = async (rows, cfg) => {
+    const replayed = await replay(rows.map((r) => r.pr), cfg, sources, repo, maintainers);
+    const allowed = replayed.filter((r) => r.decision?.status === "admitted" || r.decision?.status === "exempt");
+    return { merged: allowed.filter((r) => r.outcome === "merged").length, rejected: allowed.filter((r) => r.outcome === "rejected").length };
+  };
+  const candidate = (rule, floor, gain, cost) => ({
+    rule: ruleYaml(rule),
+    label: describeRule(rule) + (floor ? ` + min_account_age ${durationYaml(floor)}` : ""),
+    minAccountAge: floor ? durationYaml(floor) : null,
+    gain,
+    cost,
+    keeps: rate(summary.keeps.part + gain, summary.keeps.whole),
+    stops: rate(summary.stops.part - cost, summary.stops.whole)
+  });
+  const candidates = [];
+  const configs = /* @__PURE__ */ new Map();
+  for (const rule of input.rules) {
+    const withRule = { ...config, admit: [...config.admit, rule] };
+    const plain = await allowedUnder(unknown, withRule);
+    const c = candidate(rule, null, plain.merged, plain.rejected);
+    candidates.push(c);
+    configs.set(c, { rule, floor: null });
+    if (!input.withFloor || config.minAccountAge || plain.merged === 0) continue;
+    const floored = await allowedUnder(all, { ...withRule, minAccountAge: SUGGEST_FLOOR });
+    const f = candidate(rule, SUGGEST_FLOOR, floored.merged - allowedNow.merged, floored.rejected - allowedNow.rejected);
+    if (f.cost < c.cost) {
+      candidates.push(f);
+      configs.set(f, { rule, floor: SUGGEST_FLOOR });
+    }
+  }
+  const strictness = (c) => {
+    const { rule, floor } = configs.get(c);
+    return (rule.kind === "merged" ? rule.min : 0) + (floor ? 0.5 : 0);
+  };
+  candidates.sort(
+    (a, b) => b.gain - b.cost - (a.gain - a.cost) || b.gain - a.gain || a.cost - b.cost || strictness(b) - strictness(a) || a.label.localeCompare(b.label)
+  );
+  const blockedMerged = summary.keeps.whole - summary.keeps.part;
+  const helpful = candidates.filter((c) => c.gain > 0);
+  const winners = [];
+  for (const c of candidates) {
+    if (winners.length < 2 && c.gain > c.cost && !winners.some((w) => w.gain === c.gain && w.cost === c.cost)) winners.push(c);
+  }
+  const verdict = [];
+  if (blockedMerged === 0) {
+    verdict.push("The current rules already let through every merged outside PR; there is nothing to recover.");
+  } else if (helpful.length === 0) {
+    verdict.push(`None of these rules would have let through any of the ${blockedMerged} merged PRs the current rules block.`);
+  } else {
+    const most = Math.max(...helpful.map((c) => c.gain));
+    if (most < Math.max(2, Math.ceil(blockedMerged / 10))) {
+      verdict.push(`No candidate helps much: the most any recovers is ${most} of the ${blockedMerged} merged PRs blocked today.`);
+    }
+    const stopped = summary.stops.part;
+    if (stopped > 0 && helpful.every((c) => c.cost * 2 > stopped)) {
+      verdict.push(`Every rule that helps would also let through most of the ${stopped} rejected PRs the current rules stop.`);
+    }
+    if (winners.length === 0) {
+      verdict.push("Every rule that helps lets through at least as many rejected PRs as merged ones; none is suggested.");
+    }
+  }
+  const notes = [...input.notes];
+  const botClosed = input.rows.filter((r) => r.group === "external" && r.decision?.status === "unknown" && r.outcome === "auto_closed").length;
+  if (botClosed > 0) {
+    notes.push(
+      `${botClosed} unknown PR(s) were closed by a bot (an existing gate or a stale bot) and have no maintainer verdict, so what a candidate would have let through among them is not counted either way.`
+    );
+  }
+  const current = { keeps: summary.keeps, stops: summary.stops };
+  const best = winners.map((c) => {
+    const { rule, floor } = configs.get(c);
+    return { label: c.label, yaml: configYaml(config, rule, floor), reading: reading(c, current) };
+  });
+  return {
+    current,
+    blockedMerged,
+    tried: {
+      prs: unknown.length,
+      merged: unknown.filter((r) => r.outcome === "merged").length,
+      rejected: unknown.filter((r) => r.outcome === "rejected").length
+    },
+    authors: input.authors,
+    candidates,
+    best,
+    verdict,
+    notes
+  };
+}
+function reading(c, current) {
+  const more = (n, what) => n === 0 ? `no ${what} PRs` : `${n} more ${what} ${n === 1 ? "PR" : "PRs"}`;
+  return `Would have let through ${more(c.gain, "merged")} and ${more(c.cost, "rejected")}: keeps ${pct(current.keeps.value)} \u2192 ${pct(c.keeps.value)}, stops ${pct(current.stops.value)} \u2192 ${pct(c.stops.value)}.`;
+}
+function renderSuggestions(s) {
+  const out = [];
+  out.push("Suggestions");
+  out.push(
+    `Extra rules tried, each added last, on the ${s.tried.prs} unknown outside PRs that maintainers merged (${s.tried.merged}) or rejected (${s.tried.rejected}), as of each PR's open time.`
+  );
+  out.push("");
+  const signed = (n) => n > 0 ? `+${n}` : n < 0 ? `\u2212${-n}` : "0";
+  const shown = s.candidates.filter((c) => c.gain !== 0 || c.cost !== 0);
+  const idle = s.candidates.filter((c) => c.gain === 0 && c.cost === 0);
+  const table = [["rule added", "+merged", "+rejected", "keeps", "stops"]];
+  table.push(["(current rules)", "", "", pct(s.current.keeps.value), pct(s.current.stops.value)]);
+  for (const c of shown) table.push([c.label, signed(c.gain), signed(c.cost), pct(c.keeps.value), pct(c.stops.value)]);
+  out.push(...renderTable(table));
+  out.push("Sorted by merged PRs gained minus rejected PRs also let through.");
+  if (idle.length > 0) {
+    const lists = idle.filter((c) => c.rule.startsWith("list: ")).map((c) => c.rule.slice("list: ".length));
+    const others = idle.filter((c) => !c.rule.startsWith("list: ")).map((c) => c.label);
+    if (lists.length > 0) others.push(`vouched in ${lists.join(", ")}`);
+    out.push(`No change: ${others.join("; ")}.`);
+  }
+  out.push("");
+  for (const line of s.verdict) out.push(line);
+  if (s.verdict.length > 0) out.push("");
+  s.best.forEach((pick, i) => {
+    out.push(`${i === 0 ? "Best" : "Next best"}: ${pick.label}`);
+    out.push(`  ${pick.reading}`);
+    out.push("");
+    out.push(...pick.yaml.trimEnd().split("\n").map((line) => `    ${line}`));
+    out.push("");
+  });
+  if (s.notes.length > 0) {
+    out.push("Notes on the suggestions");
+    for (const note of s.notes) out.push(`  - ${note}`);
+  }
+  return out.join("\n").trimEnd();
+}
+function durationYaml(d) {
+  return `${d.amount}${d.unit}`;
+}
+function ruleYaml(rule) {
+  if (rule.kind === "list") return `list: ${rule.source.repo}${rule.source.path ? `:${rule.source.path}` : ""}`;
+  if (rule.kind === "org_member") return `org_member: ${rule.org}`;
+  return `merged: { repo: ${rule.repo}, min: ${rule.min}, within: ${durationYaml(rule.within)} }`;
+}
+function configYaml(config, rule, floor) {
+  const own = config.ownList === null ? "none" : config.ownList.path ?? "auto";
+  const lines = [`own_list: ${own}`, "admit:"];
+  for (const r of config.admit) lines.push(`  - ${ruleYaml(r)}`);
+  lines.push(`  - ${ruleYaml(rule)}  # new`);
+  if (config.minAccountAge) lines.push(`min_account_age: ${durationYaml(config.minAccountAge)}`);
+  else if (floor) lines.push(`min_account_age: ${durationYaml(floor)}  # new`);
+  return `${lines.join("\n")}
+`;
+}
+var SUGGEST_WITHIN, SUGGEST_FLOOR, DEFAULT_SUGGEST_AUTHORS;
+var init_suggest = __esm({
+  "src/backtest/suggest.ts"() {
+    "use strict";
+    init_config();
+    init_duration();
+    init_vouchfile();
+    init_queries();
+    init_catalog2();
+    init_history();
+    init_load();
+    init_replay();
+    init_report();
+    SUGGEST_WITHIN = { amount: 24, unit: "mo" };
+    SUGGEST_FLOOR = { amount: 30, unit: "d" };
+    DEFAULT_SUGGEST_AUTHORS = 100;
+  }
+});
+
 // src/cli/backtest.ts
 var backtest_exports = {};
 import fs3 from "node:fs";
@@ -11135,6 +11494,8 @@ async function main2() {
       until: { type: "string" },
       days: { type: "string", default: "365" },
       json: { type: "string" },
+      suggest: { type: "boolean", default: false },
+      "suggest-authors": { type: "string", default: String(DEFAULT_SUGGEST_AUTHORS) },
       refresh: { type: "boolean", default: false },
       quiet: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false }
@@ -11151,6 +11512,8 @@ async function main2() {
   const to = values.until ? /* @__PURE__ */ new Date(`${values.until}T00:00:00Z`) : startOfTodayUtc();
   if (Number.isNaN(to.getTime())) return fail("--until must be a date like 2026-11-27");
   const from = new Date(to.getTime() - days * 864e5);
+  const maxAuthors = Number(values["suggest-authors"]);
+  if (!Number.isInteger(maxAuthors) || maxAuthors < 0) return fail("--suggest-authors must be a whole number");
   const configText = values.config ? fs3.readFileSync(values.config, "utf8") : DEFAULT_CONFIG_YAML;
   const config = parseConfig(configText);
   const log = values.quiet ? () => {
@@ -11168,8 +11531,26 @@ async function main2() {
     const rows = await replay(data.prs, config, historicalSources(data), repo, data.maintainers);
     const summary = summarize({ repo, from, to, config, ownListPath: data.own?.path ?? null, rows, notes: data.notes });
     summaries.push(summary);
+    let suggestions;
+    if (values.suggest) {
+      const rules = candidateRules(config, repo);
+      const facts = await loadSuggestionFacts(gh, { config, data, rows, rules, from, to, maxAuthors, log });
+      suggestions = await suggest({
+        repo,
+        config,
+        summary,
+        rows,
+        sources: suggestionSources(facts),
+        rules,
+        maintainers: data.maintainers,
+        withFloor: true,
+        authors: facts.authors,
+        notes: facts.notes
+      });
+    }
     results.push({
       summary,
+      ...suggestions ? { suggestions } : {},
       prs: rows.map((r) => ({
         number: r.pr.number,
         author: r.pr.author,
@@ -11183,6 +11564,10 @@ async function main2() {
     log("");
     console.log(renderSummary(summary));
     console.log("");
+    if (suggestions) {
+      console.log(renderSuggestions(suggestions));
+      console.log("");
+    }
   }
   if (summaries.length > 1) {
     console.log("Comparison");
@@ -11213,6 +11598,7 @@ var init_backtest = __esm({
     init_history();
     init_replay();
     init_report();
+    init_suggest();
     init_config();
     init_cache();
     init_client();
@@ -11225,6 +11611,12 @@ Options:
   --until <date>    End of the window, YYYY-MM-DD (default: today, UTC)
   --days <n>        Length of the window in days (default: 365)
   --json <file>     Also write the summaries and every PR's decision as JSON
+  --suggest         After the report, try extra rules (merges anywhere, the catalogued trust
+                    lists, and a 30-day account-age floor where it helps) on the PRs left
+                    unknown, and print the best as YAML
+  --suggest-authors <n>
+                    Most authors to search for merges anywhere with --suggest (default ${DEFAULT_SUGGEST_AUTHORS};
+                    GitHub search allows about 30 requests a minute)
   --refresh         Ignore cached GitHub responses (still writes the cache)
   --quiet           No progress output
   -h, --help        Show this help

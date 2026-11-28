@@ -5,6 +5,15 @@ import { loadBacktestData } from "../backtest/load.ts";
 import { historicalSources } from "../backtest/history.ts";
 import { replay } from "../backtest/replay.ts";
 import { renderComparison, renderSummary, summarize, type Summary } from "../backtest/report.ts";
+import {
+  candidateRules,
+  DEFAULT_SUGGEST_AUTHORS,
+  loadSuggestionFacts,
+  renderSuggestions,
+  suggest,
+  suggestionSources,
+  type Suggestions,
+} from "../backtest/suggest.ts";
 import { ConfigError, DEFAULT_CONFIG_YAML, isRepoName, parseConfig } from "../engine/config.ts";
 import { createDiskCache } from "../github/cache.ts";
 import { createClient, resolveToken } from "../github/client.ts";
@@ -18,6 +27,12 @@ Options:
   --until <date>    End of the window, YYYY-MM-DD (default: today, UTC)
   --days <n>        Length of the window in days (default: 365)
   --json <file>     Also write the summaries and every PR's decision as JSON
+  --suggest         After the report, try extra rules (merges anywhere, the catalogued trust
+                    lists, and a 30-day account-age floor where it helps) on the PRs left
+                    unknown, and print the best as YAML
+  --suggest-authors <n>
+                    Most authors to search for merges anywhere with --suggest (default ${DEFAULT_SUGGEST_AUTHORS};
+                    GitHub search allows about 30 requests a minute)
   --refresh         Ignore cached GitHub responses (still writes the cache)
   --quiet           No progress output
   -h, --help        Show this help
@@ -32,6 +47,8 @@ async function main(): Promise<number> {
       until: { type: "string" },
       days: { type: "string", default: "365" },
       json: { type: "string" },
+      suggest: { type: "boolean", default: false },
+      "suggest-authors": { type: "string", default: String(DEFAULT_SUGGEST_AUTHORS) },
       refresh: { type: "boolean", default: false },
       quiet: { type: "boolean", default: false },
       help: { type: "boolean", short: "h", default: false },
@@ -50,6 +67,8 @@ async function main(): Promise<number> {
   const to = values.until ? new Date(`${values.until}T00:00:00Z`) : startOfTodayUtc();
   if (Number.isNaN(to.getTime())) return fail("--until must be a date like 2026-11-27");
   const from = new Date(to.getTime() - days * 86_400_000);
+  const maxAuthors = Number(values["suggest-authors"]);
+  if (!Number.isInteger(maxAuthors) || maxAuthors < 0) return fail("--suggest-authors must be a whole number");
 
   const configText = values.config ? fs.readFileSync(values.config, "utf8") : DEFAULT_CONFIG_YAML;
   const config = parseConfig(configText);
@@ -68,8 +87,27 @@ async function main(): Promise<number> {
     const rows = await replay(data.prs, config, historicalSources(data), repo, data.maintainers);
     const summary = summarize({ repo, from, to, config, ownListPath: data.own?.path ?? null, rows, notes: data.notes });
     summaries.push(summary);
+
+    let suggestions: Suggestions | undefined;
+    if (values.suggest) {
+      const rules = candidateRules(config, repo);
+      const facts = await loadSuggestionFacts(gh, { config, data, rows, rules, from, to, maxAuthors, log });
+      suggestions = await suggest({
+        repo,
+        config,
+        summary,
+        rows,
+        sources: suggestionSources(facts),
+        rules,
+        maintainers: data.maintainers,
+        withFloor: true,
+        authors: facts.authors,
+        notes: facts.notes,
+      });
+    }
     results.push({
       summary,
+      ...(suggestions ? { suggestions } : {}),
       prs: rows.map((r) => ({
         number: r.pr.number,
         author: r.pr.author,
@@ -83,6 +121,10 @@ async function main(): Promise<number> {
     log("");
     console.log(renderSummary(summary));
     console.log("");
+    if (suggestions) {
+      console.log(renderSuggestions(suggestions));
+      console.log("");
+    }
   }
 
   if (summaries.length > 1) {

@@ -331,8 +331,27 @@ happened (merged; rejected by a maintainer; withdrawn by its author; closed by a
   many newcomers blocked on their first PR still went on to get one merged.
 
 `backtest` options: `--config`, `--until <YYYY-MM-DD>`, `--days <n>` (default 365),
-`--json <file>`, `--refresh`, `--quiet`. GitHub responses are cached in `.cache/`, so
+`--json <file>`, `--suggest`, `--suggest-authors <n>`, `--refresh`, `--quiet`. GitHub responses are cached in `.cache/`, so
 reruns with other rules are fast.
+
+### Finding a rule that would have helped
+
+Add `--suggest` and the backtest tries extra rules on the PRs your rules left unknown:
+merged work anywhere on GitHub (1, 3 or 10 PRs), every list in the trust list directory, and
+a 30-day account-age floor where it helps. Each is judged as of the day the PR was opened.
+
+```
+rule added                                               +merged  +rejected  keeps  stops
+(current rules)                                                                 8%   100%
+≥10 merged PRs in others' public repos within 24 months       +6         +3    58%    70%
+≥1 merged PR in others' public repos within 24 months         +8         +6    75%    40%
+```
+
+`+merged` is good work the extra rule would have let through; `+rejected` is what it costs:
+PRs your maintainers turned down that it would also have let through. The best one or two are
+printed as YAML to copy. GitHub search allows about 30 requests a minute, so this looks up
+at most `--suggest-authors` authors (default shown in `--help`) and says so when it stops
+short. (Sample: astral-sh/uv, 45 days, November 2026.)
 
 ## Limitations
 
