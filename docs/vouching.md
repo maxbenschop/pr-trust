@@ -25,7 +25,7 @@ jobs:
     if: github.event_name != 'issue_comment' || startsWith(github.event.comment.body, '/vouch')
     runs-on: ubuntu-latest
     steps:
-      - uses: maxbenschop/pr-trust@cc7858b8951781f7f304c6d1f4b47cc964c18f2c # v0.1.2
+      - uses: maxbenschop/pr-trust@7ba270aa66f83cf1a9c882e85d090c5e8fa8aa74 # v0.1.3
 ```
 
 - `/vouch` on a pull request vouches for its author; `/vouch @login` (or `/vouch login`) on

@@ -31,4 +31,4 @@ jobs:
     steps:
       # Pin to a release commit; replace the hash with the release you use.
       # /vouch needs v0.1.2 or later.
-      - uses: maxbenschop/pr-trust@cc7858b8951781f7f304c6d1f4b47cc964c18f2c # v0.1.2
+      - uses: maxbenschop/pr-trust@7ba270aa66f83cf1a9c882e85d090c5e8fa8aa74 # v0.1.3
