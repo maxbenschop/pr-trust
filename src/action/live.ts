@@ -2,7 +2,7 @@ import { listKey, VOUCH_FILE_CANDIDATES, type ListRef } from "../engine/config.t
 import type { ListStatus, TrustSources } from "../engine/rules.ts";
 import { EMPTY_LIST, normalizeLogin, parseVouchFile, type VouchList } from "../engine/vouchfile.ts";
 import type { GraphQLClient } from "../github/client.ts";
-import { isoSeconds } from "../github/queries.ts";
+import { countAuthorMerges, isoSeconds } from "../github/queries.ts";
 
 /**
  * Reads files from the tip of a repository's default branch, never from a PR's branch,
@@ -37,6 +37,12 @@ export async function readFirstFile(
 }
 
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/**
+ * Pages of 100 of the author's merged PRs to walk when a repository is missing from the
+ * search index. Five pages is at most five extra requests per `merged` rule per check.
+ */
+export const FALLBACK_MAX_PAGES = 5;
 
 export type LiveSources = TrustSources & {
   /** Problems worth showing the maintainer, such as an unreadable list. */
@@ -87,6 +93,24 @@ export function liveSources(gh: GraphQLClient, options: { repo: string; ownListP
     return pending;
   };
 
+  const renamed = new Set<string>();
+  const names = new Map<string, Promise<string | null>>();
+  /** The repository's name today (GitHub redirects old names), or null if it cannot be read. */
+  const currentName = (repo: string) => {
+    let pending = names.get(repo);
+    if (!pending) {
+      const [owner, name] = repo.split("/");
+      pending = gh
+        .graphql<{ repository: { nameWithOwner: string } | null }>(
+          `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }`,
+          { owner, name },
+        )
+        .then((r) => r.repository?.nameWithOwner ?? null, () => null);
+      names.set(repo, pending);
+    }
+    return pending;
+  };
+
   return {
     warnings,
     async ownList(login): Promise<ListStatus> {
@@ -98,13 +122,47 @@ export function liveSources(gh: GraphQLClient, options: { repo: string; ownListP
     async listVouches(source, login) {
       return (await loadList(source)).vouched.has(normalizeLogin(login));
     },
-    async mergedCount(repo, login, from, to) {
+    async mergedCount(named, login, from, to, min) {
       if (!LOGIN.test(login)) return 0;
-      const n = await count(`repo:${repo} is:pr is:merged author:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`);
-      if (n === 0 && !(await isSearchable(repo))) {
-        warnings.push(`${repo} is not in GitHub's search index, so its merge history cannot be checked.`);
+      const merges = (repo: string) =>
+        count(`repo:${repo} is:pr is:merged author:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`);
+      let repo = named;
+      let n = await merges(repo);
+      if (n > 0 || (await isSearchable(repo))) return n;
+
+      // Search does not follow renames: a repository that moved (facebook/react is now
+      // react/react) finds nothing under its old name. Look up the current name and retry.
+      const current = await currentName(named);
+      if (current && current.toLowerCase() !== named.toLowerCase()) {
+        if (!renamed.has(named)) {
+          renamed.add(named);
+          warnings.push(`${named} is now ${current}. The rule still works, but update it to the new name.`);
+        }
+        repo = current;
+        n = await merges(repo);
+        if (n > 0 || (await isSearchable(repo))) return n;
       }
-      return n;
+
+      // Search knows nothing about this repository at all, so walk the author's own merged
+      // PRs instead. A failure here only costs this rule, never the check.
+      const unchecked = `${repo} is not in GitHub's search index`;
+      try {
+        const result = await countAuthorMerges(gh, { repo, login, from, to, min, maxPages: FALLBACK_MAX_PAGES });
+        if (result === null) {
+          warnings.push(`${unchecked}, and ${login}'s pull requests could not be listed, so their merge history there cannot be checked.`);
+          return 0;
+        }
+        if (!result.complete) {
+          warnings.push(
+            `${unchecked}, and ${login} has more merged pull requests elsewhere than this check reads, ` +
+              `so only ${result.count} merged PR${result.count === 1 ? "" : "s"} there could be confirmed.`,
+          );
+        }
+        return result.count;
+      } catch (error) {
+        warnings.push(`${unchecked}, and listing ${login}'s pull requests failed (${(error as Error).message}), so their merge history there cannot be checked.`);
+        return 0;
+      }
     },
   };
 }

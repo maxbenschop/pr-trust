@@ -6,6 +6,9 @@
   project's rules as a list of ways to pass. Denounced authors get their own shorter comment.
 - `{rules}` placeholder for custom messages.
 - New logo; the Marketplace icon is now a check mark.
+- `merged` rules now follow renamed repositories (`facebook/react` is now `react/react`) and
+  warn you to update the rule. For a repository search cannot find at all, the Action counts
+  the author's own merged PRs instead, reading at most 500 of them.
 
 ## 0.1.1 (2026-11-28)
 

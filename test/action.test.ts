@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { asAuthor, COMMENT_MARKER, DEFAULT_MESSAGE, describeWaysToPass, planActions, renderMessage, runCheck, type PullRequestInfo } from "../src/action/check.ts";
+import { FALLBACK_MAX_PAGES } from "../src/action/live.ts";
 import { summaryMarkdown } from "../src/action/report.ts";
 import { parseConfig } from "../src/engine/config.ts";
 import type { GitHubClient, RestResponse } from "../src/github/client.ts";
@@ -13,20 +14,38 @@ function fakeGitHub(world: {
   permission?: string; // permission of the PR author
   comments?: { id: number; body: string; user: { type: string } }[];
   failGraphql?: boolean;
+  unsearchable?: string[]; // repos missing from the search index
+  authorPRs?: Record<string, { number: number; repo: string; mergedAt: string; updatedAt: string }[]>; // newest first
+  failAuthorPRs?: boolean;
+  renamed?: Record<string, string>; // old "owner/repo" -> current name
 }) {
   const calls: Call[] = [];
+  const graphqlCalls: string[] = [];
   const gh: GitHubClient = {
     stats: { requests: 0, cached: 0 },
     async graphql<T>(query: string, variables: Record<string, unknown> = {}) {
       if (world.failGraphql) throw new Error("GitHub is down");
       if (query.includes("search(")) {
         const q = variables.q as string;
+        graphqlCalls.push(q);
         const repo = /repo:(\S+)/.exec(q)![1]!;
+        if (world.unsearchable?.includes(repo)) return { search: { issueCount: 0 } } as T;
         const author = /author:(\S+)/.exec(q)?.[1];
         const n = author ? (world.merged?.[`${repo}:${author}`] ?? 0) : 1;
         return { search: { issueCount: n } } as T;
       }
+      if (query.includes("user(login:")) {
+        graphqlCalls.push(`user ${variables.login} after ${variables.after}`);
+        if (world.failAuthorPRs) throw new Error("timed out");
+        const prs = world.authorPRs?.[variables.login as string];
+        if (!prs) return { user: null } as T;
+        const offset = Number(variables.after ?? 0);
+        const nodes = prs.slice(offset, offset + 100).map((p) => ({ ...p, repository: { nameWithOwner: p.repo } }));
+        const hasNextPage = offset + 100 < prs.length;
+        return { user: { pullRequests: { pageInfo: { hasNextPage, endCursor: String(offset + 100) }, nodes } } } as T;
+      }
       const repo = `${variables.owner}/${variables.name}`;
+      if (query.includes("nameWithOwner")) return { repository: { nameWithOwner: world.renamed?.[repo] ?? repo } } as T;
       const repository: Record<string, unknown> = {};
       for (const [, alias, path] of query.matchAll(/(f\d+): object\(expression: "HEAD:([^"]+)"\)/g)) {
         const text = world.files?.[`${repo}:${path}`];
@@ -43,7 +62,7 @@ function fakeGitHub(world: {
     },
   };
   const writes = () => calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path.replace("/repos/me/repo", "")}`);
-  return { gh, calls, writes };
+  return { gh, calls, writes, graphqlCalls };
 }
 
 const pr = (overrides: Partial<PullRequestInfo> = {}): PullRequestInfo => ({
@@ -100,6 +119,76 @@ describe("runCheck", () => {
     const result = await runCheck(merged.gh, { ...base, pr: pr() });
     expect(result).toMatchObject({ status: "admitted", reason: "2 merged PRs in big/lib" });
     expect(result.warnings).toContain("No trust list found in friends/project.");
+  });
+
+  describe("merged rules on a repository missing from the search index", () => {
+    const config = "own_list: none\nadmit:\n  - merged: { repo: facebook/react, min: 2, within: 12mo }\n";
+    const files = { "me/repo:.github/trust.yml": config };
+    const now = Date.now();
+    const daysAgo = (days: number) => new Date(now - days * 86_400_000).toISOString();
+    const merged = (number: number, repo: string, days: number) => ({ number, repo, mergedAt: daysAgo(days), updatedAt: daysAgo(days) });
+
+    it("follows a renamed repository to its current name", async () => {
+      const { gh, graphqlCalls } = fakeGitHub({
+        files,
+        unsearchable: ["facebook/react"],
+        renamed: { "facebook/react": "react/react" },
+        merged: { "react/react:newbie": 3 },
+      });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result).toMatchObject({ status: "admitted", reason: "3 merged PRs in facebook/react" });
+      expect(result.warnings).toEqual(["facebook/react is now react/react. The rule still works, but update it to the new name."]);
+      expect(graphqlCalls.some((c) => c.startsWith("user "))).toBe(false);
+    });
+
+    it("counts the author's merged PRs from their own pull requests instead", async () => {
+      const { gh, graphqlCalls } = fakeGitHub({
+        files,
+        unsearchable: ["facebook/react"],
+        authorPRs: { newbie: [merged(1, "facebook/react", 10), merged(2, "other/repo", 20), merged(3, "Facebook/React", 30), merged(4, "facebook/react", 40)] },
+      });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result).toMatchObject({ status: "admitted", reason: "2 merged PRs in facebook/react" });
+      expect(result.warnings).toEqual([]);
+      expect(graphqlCalls.filter((c) => c.startsWith("user "))).toEqual(["user newbie after null"]);
+    });
+
+    it("ignores merges outside the window and stops once past its start", async () => {
+      const old = Array.from({ length: 300 }, (_, i) => merged(100 + i, "facebook/react", 400 + i));
+      const { gh, graphqlCalls } = fakeGitHub({
+        files,
+        unsearchable: ["facebook/react"],
+        authorPRs: { newbie: [merged(1, "facebook/react", 10), ...old] },
+      });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result.status).toBe("unknown");
+      expect(result.warnings).toEqual([]);
+      expect(graphqlCalls.filter((c) => c.startsWith("user "))).toHaveLength(1);
+    });
+
+    it("stops after a few pages and warns when the answer is still open", async () => {
+      const elsewhere = Array.from({ length: 1000 }, (_, i) => merged(i, "other/repo", 1 + i * 0.1));
+      const { gh, graphqlCalls } = fakeGitHub({ files, unsearchable: ["facebook/react"], authorPRs: { newbie: elsewhere } });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result.status).toBe("unknown");
+      expect(graphqlCalls.filter((c) => c.startsWith("user "))).toHaveLength(FALLBACK_MAX_PAGES);
+      expect(result.warnings.join("\n")).toContain("facebook/react is not in GitHub's search index");
+    });
+
+    it("keeps the warning, and never errors, when the fallback fails", async () => {
+      const { gh } = fakeGitHub({ files: { "me/repo:.github/trust.yml": `${config}on_unknown: close\n` }, unsearchable: ["facebook/react"], failAuthorPRs: true });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result.status).toBe("unknown");
+      expect(result.warnings.join("\n")).toContain("facebook/react is not in GitHub's search index, and listing newbie's pull requests failed (timed out)");
+    });
+
+    it("does not walk the author's PRs when search can answer", async () => {
+      const { gh, graphqlCalls } = fakeGitHub({ files, merged: { "facebook/react:newbie": 0 } });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result.status).toBe("unknown");
+      expect(result.warnings).toEqual([]);
+      expect(graphqlCalls.some((c) => c.startsWith("user "))).toBe(false);
+    });
   });
 
   it("uses the denouncement in the project's own list, read from the default branch", async () => {

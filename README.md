@@ -188,8 +188,11 @@ reruns with other rules are fast.
 
 The Action:
 
-- `merged` rules use GitHub search, which leaves out some repositories entirely (for example
-  `facebook/react`). Such a rule then never matches, and the run shows a warning saying so.
+- `merged` rules use GitHub search, which does not follow renames. When a rule names a
+  repository that has moved (`facebook/react` is now `react/react`), the Action looks up the
+  current name, counts there, and warns you to update the rule. For a repository search cannot
+  find at all, it reads the author's own merged PRs instead, up to 500 of them; if that is
+  not enough to decide, the rule counts only what it read and a warning says so.
 - It acts on the PR's state when the event fired. A PR edited later is not checked again
   unless it is reopened.
 - It needs `pull_request_target`. With `pull_request`, PRs from forks get a read-only token,

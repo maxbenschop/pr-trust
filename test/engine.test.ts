@@ -147,14 +147,14 @@ exempt_paths: ["docs/**"]
     const d = await evaluate(
       input,
       sources({
-        mergedCount: (repo, login, from, to) => {
-          calls.push({ repo, login, from: from.toISOString(), to: to.toISOString() });
+        mergedCount: (repo, login, from, to, min) => {
+          calls.push({ repo, login, from: from.toISOString(), to: to.toISOString(), min });
           return 2;
         },
       }),
     );
     expect(d).toMatchObject({ status: "admitted", reason: "2 merged PRs in me/repo" });
-    expect(calls).toEqual([{ repo: "me/repo", login: "alice", from: "2025-06-01T00:00:00.000Z", to: "2026-06-01T00:00:00.000Z" }]);
+    expect(calls).toEqual([{ repo: "me/repo", login: "alice", from: "2025-06-01T00:00:00.000Z", to: "2026-06-01T00:00:00.000Z", min: 2 }]);
     expect((await evaluate(input, sources({ mergedCount: () => 1 }))).status).toBe("unknown");
   });
 

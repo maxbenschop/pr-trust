@@ -9430,7 +9430,7 @@ async function evaluate(input, sources) {
       continue;
     }
     const repo = rule.repo === SELF ? input.repo : rule.repo;
-    const count = await sources.mergedCount(repo, login, subtractDuration(at, rule.within), at);
+    const count = await sources.mergedCount(repo, login, subtractDuration(at, rule.within), at, rule.min);
     if (count >= rule.min) {
       return {
         status: "admitted",
@@ -9808,6 +9808,41 @@ async function fetchMerged(gh, repo, from, to, onProgress) {
   }
   return rows;
 }
+async function countAuthorMerges(gh, options) {
+  const query = `query($login: String!, $after: String) {
+  user(login: $login) {
+    pullRequests(first: 100, after: $after, states: [MERGED], orderBy: { field: UPDATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number mergedAt updatedAt repository { nameWithOwner } }
+    }
+  }
+}`;
+  const repo = options.repo.toLowerCase();
+  const fromIso = options.from.toISOString();
+  const toIso = options.to.toISOString();
+  const seen = /* @__PURE__ */ new Set();
+  let after = null;
+  for (let page = 1; page <= options.maxPages; page++) {
+    const result = await gh.graphql(query, { login: options.login, after });
+    if (!result.user) return null;
+    const { pageInfo, nodes } = result.user.pullRequests;
+    let pastStart = false;
+    for (const pr of nodes) {
+      if (!pr) continue;
+      if (pr.updatedAt < fromIso) {
+        pastStart = true;
+        break;
+      }
+      if (pr.repository.nameWithOwner.toLowerCase() !== repo || !pr.mergedAt) continue;
+      if (pr.mergedAt < fromIso || pr.mergedAt >= toIso) continue;
+      seen.add(pr.number);
+      if (seen.size >= options.min) return { count: seen.size, complete: true };
+    }
+    if (pastStart || !pageInfo.hasNextPage || !pageInfo.endCursor) return { count: seen.size, complete: true };
+    after = pageInfo.endCursor;
+  }
+  return { count: seen.size, complete: false };
+}
 async function fetchFileVersions(gh, repo, path3) {
   const [owner, name] = repo.split("/");
   const historyQuery = `query($owner: String!, $name: String!, $path: String!, $after: String) {
@@ -9925,6 +9960,20 @@ function liveSources(gh, options) {
     }
     return pending;
   };
+  const renamed = /* @__PURE__ */ new Set();
+  const names = /* @__PURE__ */ new Map();
+  const currentName = (repo) => {
+    let pending = names.get(repo);
+    if (!pending) {
+      const [owner, name] = repo.split("/");
+      pending = gh.graphql(
+        `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }`,
+        { owner, name }
+      ).then((r) => r.repository?.nameWithOwner ?? null, () => null);
+      names.set(repo, pending);
+    }
+    return pending;
+  };
   return {
     warnings,
     async ownList(login) {
@@ -9936,17 +9985,43 @@ function liveSources(gh, options) {
     async listVouches(source, login) {
       return (await loadList2(source)).vouched.has(normalizeLogin(login));
     },
-    async mergedCount(repo, login, from, to) {
+    async mergedCount(named, login, from, to, min) {
       if (!LOGIN.test(login)) return 0;
-      const n = await count(`repo:${repo} is:pr is:merged author:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`);
-      if (n === 0 && !await isSearchable(repo)) {
-        warnings.push(`${repo} is not in GitHub's search index, so its merge history cannot be checked.`);
+      const merges = (repo2) => count(`repo:${repo2} is:pr is:merged author:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`);
+      let repo = named;
+      let n = await merges(repo);
+      if (n > 0 || await isSearchable(repo)) return n;
+      const current = await currentName(named);
+      if (current && current.toLowerCase() !== named.toLowerCase()) {
+        if (!renamed.has(named)) {
+          renamed.add(named);
+          warnings.push(`${named} is now ${current}. The rule still works, but update it to the new name.`);
+        }
+        repo = current;
+        n = await merges(repo);
+        if (n > 0 || await isSearchable(repo)) return n;
       }
-      return n;
+      const unchecked = `${repo} is not in GitHub's search index`;
+      try {
+        const result = await countAuthorMerges(gh, { repo, login, from, to, min, maxPages: FALLBACK_MAX_PAGES });
+        if (result === null) {
+          warnings.push(`${unchecked}, and ${login}'s pull requests could not be listed, so their merge history there cannot be checked.`);
+          return 0;
+        }
+        if (!result.complete) {
+          warnings.push(
+            `${unchecked}, and ${login} has more merged pull requests elsewhere than this check reads, so only ${result.count} merged PR${result.count === 1 ? "" : "s"} there could be confirmed.`
+          );
+        }
+        return result.count;
+      } catch (error) {
+        warnings.push(`${unchecked}, and listing ${login}'s pull requests failed (${error.message}), so their merge history there cannot be checked.`);
+        return 0;
+      }
     }
   };
 }
-var LOGIN;
+var LOGIN, FALLBACK_MAX_PAGES;
 var init_live = __esm({
   "src/action/live.ts"() {
     "use strict";
@@ -9954,6 +10029,7 @@ var init_live = __esm({
     init_vouchfile();
     init_queries();
     LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+    FALLBACK_MAX_PAGES = 5;
   }
 });
 

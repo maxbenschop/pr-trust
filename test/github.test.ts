@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createClient, RetriesExhaustedError, type GraphQLClient } from "../src/github/client.ts";
-import { fetchPullRequests, searchAll } from "../src/github/queries.ts";
+import { countAuthorMerges, fetchPullRequests, searchAll } from "../src/github/queries.ts";
 
 describe("searchAll", () => {
   it("splits ranges that exceed the 1000-result cap and pages through the rest", async () => {
@@ -41,6 +41,46 @@ describe("searchAll", () => {
     expect(new Set(result.map((r) => r.number)).size).toBe(1500);
     expect(result.length).toBe(1500);
     expect(queries[0]).toBe("repo:a/b is:pr created:2026-01-01T00:00:00Z..2026-01-11T00:00:00Z");
+  });
+});
+
+describe("countAuthorMerges", () => {
+  const from = new Date("2026-01-01T00:00:00Z");
+  const to = new Date("2026-07-01T00:00:00Z");
+  const fake = (user: unknown) => {
+    const requests: unknown[] = [];
+    const gh: GraphQLClient = {
+      stats: { requests: 0, cached: 0 },
+      async graphql<T>(_query: string, variables: Record<string, unknown> = {}) {
+        requests.push(variables);
+        return { user } as T;
+      },
+    };
+    return { gh, requests };
+  };
+  const pr = (number: number, nameWithOwner: string, mergedAt: string, updatedAt = mergedAt) => ({
+    number,
+    mergedAt,
+    updatedAt,
+    repository: { nameWithOwner },
+  });
+
+  it("counts merges into the repo in [from, to) and treats a missing user as unanswerable", async () => {
+    const { gh } = fake({
+      pullRequests: {
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: [
+          pr(1, "a/b", "2026-07-01T00:00:00Z"), // at `to`: excluded
+          pr(2, "a/b", "2026-03-01T00:00:00Z"),
+          pr(3, "c/d", "2026-02-01T00:00:00Z"),
+          pr(4, "A/B", "2025-12-31T00:00:00Z", "2026-02-01T00:00:00Z"), // merged before `from`
+          pr(5, "a/b", "2026-01-01T00:00:00Z"),
+        ],
+      },
+    });
+    const options = { repo: "a/b", login: "x", from, to, min: 5, maxPages: 5 };
+    expect(await countAuthorMerges(gh, options)).toEqual({ count: 2, complete: true });
+    expect(await countAuthorMerges(fake(null).gh, options)).toBeNull();
   });
 });
 

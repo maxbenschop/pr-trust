@@ -277,7 +277,7 @@ export async function fetchMerged(
     onProgress,
   });
 
-  // Some repositories are missing from the search index (facebook/react, for one), and
+  // Some repositories cannot be found by search (a renamed one under its old name, for one), and
   // search then reports nothing at all. Fall back to walking the repository's merged PRs.
   if (raw.length === 0) {
     onProgress?.("search returned nothing; listing merged PRs from the repository instead");
@@ -305,6 +305,67 @@ export async function fetchMerged(
     rows.push({ author: pr.author.login, mergedAt: pr.mergedAt, mergedBy: pr.mergedBy?.login ?? null });
   }
   return rows;
+}
+
+export type AuthorMergeCount = {
+  count: number;
+  /** False when the page cap was hit before the answer was known; `count` is then a lower bound. */
+  complete: boolean;
+};
+
+/**
+ * Counts `login`'s PRs merged into `repo` in [from, to) by walking the author's own merged
+ * PRs, most recently updated first, instead of searching. This works for repositories that
+ * are missing from the search index, and costs one request per 100 of the author's merged
+ * PRs (in any repository) updated since `from`. It stops once `min` is reached, once it is
+ * past `from`, or after `maxPages` pages. Returns null when there is no such user.
+ */
+export async function countAuthorMerges(
+  gh: GraphQLClient,
+  options: { repo: string; login: string; from: Date; to: Date; min: number; maxPages: number },
+): Promise<AuthorMergeCount | null> {
+  type Page = {
+    user: {
+      pullRequests: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: ({ number: number; mergedAt: string | null; updatedAt: string; repository: { nameWithOwner: string } } | null)[];
+      };
+    } | null;
+  };
+  const query = `query($login: String!, $after: String) {
+  user(login: $login) {
+    pullRequests(first: 100, after: $after, states: [MERGED], orderBy: { field: UPDATED_AT, direction: DESC }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { number mergedAt updatedAt repository { nameWithOwner } }
+    }
+  }
+}`;
+  const repo = options.repo.toLowerCase();
+  const fromIso = options.from.toISOString();
+  const toIso = options.to.toISOString();
+  const seen = new Set<number>();
+  let after: string | null = null;
+  for (let page = 1; page <= options.maxPages; page++) {
+    const result: Page = await gh.graphql<Page>(query, { login: options.login, after });
+    if (!result.user) return null;
+    const { pageInfo, nodes } = result.user.pullRequests;
+    let pastStart = false;
+    for (const pr of nodes) {
+      if (!pr) continue;
+      // A PR's updatedAt is never earlier than its mergedAt, so nothing after this merged in the window.
+      if (pr.updatedAt < fromIso) {
+        pastStart = true;
+        break;
+      }
+      if (pr.repository.nameWithOwner.toLowerCase() !== repo || !pr.mergedAt) continue;
+      if (pr.mergedAt < fromIso || pr.mergedAt >= toIso) continue;
+      seen.add(pr.number);
+      if (seen.size >= options.min) return { count: seen.size, complete: true };
+    }
+    if (pastStart || !pageInfo.hasNextPage || !pageInfo.endCursor) return { count: seen.size, complete: true };
+    after = pageInfo.endCursor;
+  }
+  return { count: seen.size, complete: false };
 }
 
 /**

@@ -13,8 +13,11 @@ type MaybePromise<T> = T | Promise<T>;
 export interface TrustSources {
   ownList(login: string, at: Date): MaybePromise<ListStatus>;
   listVouches(source: ListRef, login: string, at: Date): MaybePromise<boolean>;
-  /** Merged PRs authored by `login` in `repo`, merged in [from, to). */
-  mergedCount(repo: string, login: string, from: Date, to: Date): MaybePromise<number>;
+  /**
+   * Merged PRs authored by `login` in `repo`, merged in [from, to). Only whether the count
+   * reaches `min` matters, so a source may stop counting there and return `min`.
+   */
+  mergedCount(repo: string, login: string, from: Date, to: Date, min: number): MaybePromise<number>;
 }
 
 export type Decision =
@@ -53,7 +56,7 @@ export async function evaluate(input: EvaluateInput, sources: TrustSources): Pro
       continue;
     }
     const repo = rule.repo === SELF ? input.repo : rule.repo;
-    const count = await sources.mergedCount(repo, login, subtractDuration(at, rule.within), at);
+    const count = await sources.mergedCount(repo, login, subtractDuration(at, rule.within), at, rule.min);
     if (count >= rule.min) {
       return {
         status: "admitted",
