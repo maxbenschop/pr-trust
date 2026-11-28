@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: trust
-        uses: maxbenschop/pr-trust@42d48f665bc08357050696e66beac9c314946f96 # v0.1.0
+        uses: maxbenschop/pr-trust@00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6 # v0.1.1
         with:
           dry-run: "true" # decide only; Vouch does the labelling and closing
 

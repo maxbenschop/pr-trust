@@ -42,7 +42,7 @@ It comes with two command-line tools:
      check:
        runs-on: ubuntu-latest
        steps:
-         - uses: maxbenschop/pr-trust@42d48f665bc08357050696e66beac9c314946f96 # v0.1.0
+         - uses: maxbenschop/pr-trust@00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6 # v0.1.1
    ```
 
    Pin the Action to a release's full commit hash, not a tag.
@@ -138,7 +138,7 @@ check for anyone it admits ([full example](examples/with-vouch.yml)):
 
 ```yaml
       - id: trust
-        uses: maxbenschop/pr-trust@42d48f665bc08357050696e66beac9c314946f96 # v0.1.0
+        uses: maxbenschop/pr-trust@00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6 # v0.1.1
         with:
           dry-run: "true"
       - if: steps.trust.outputs.admitted != 'true'
