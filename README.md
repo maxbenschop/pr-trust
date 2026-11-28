@@ -1,4 +1,4 @@
-# pr-trust
+# <img src="site/logo.svg" alt="" width="32" height="32" align="top"> pr-trust
 
 [![CI](https://github.com/maxbenschop/pr-trust/actions/workflows/ci.yml/badge.svg)](https://github.com/maxbenschop/pr-trust/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)

@@ -2,7 +2,7 @@ name: PR Trust
 description: Check pull request authors against contributor-trust rules, with Vouch list support.
 author: maxbenschop
 branding:
-  icon: shield
+  icon: check-square
   color: green
 
 inputs:
