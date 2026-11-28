@@ -11,6 +11,7 @@
   "scripts": {
     "backtest": "node src/cli/backtest.ts",
     "check": "node src/cli/check.ts",
+    "validate": "node src/cli/validate.ts",
     "build": "esbuild src/action/main.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/index.cjs && esbuild src/cli/main.ts --bundle --platform=node --target=node22 --format=esm --banner:js=\"#!/usr/bin/env node\nimport { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=dist/cli.mjs",
     "test": "vitest run",
     "typecheck": "tsc",

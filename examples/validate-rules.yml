@@ -1,0 +1,28 @@
+# .github/workflows/validate-rules.yml
+# Checks a pull request's changes to the rules file before they are merged, so a mistake
+# shows up on the pull request instead of as "trust: check failed" on the next one.
+#
+# This is a separate workflow from the contributor check on purpose. It reads a file the
+# pull request wrote, so it runs on pull_request, where a pull request from a fork gets a
+# read-only token and no secrets, never on pull_request_target, whose token can write. (The
+# Action refuses validate under pull_request_target.) The file is read through the API and
+# only parsed; nothing is checked out and nothing from the pull request runs, so there is no
+# actions/checkout step and no npm.
+name: Validate trust rules
+
+on:
+  pull_request:
+    paths: [.github/trust.yml] # add your message_file here too, if you have one
+
+permissions:
+  contents: read # read the rules, your own list and message file; check the repositories rules name
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      # Pin to the full commit hash of a release newer than v0.1.1 (the first with validate).
+      # An older release ignores the input and checks the pull request instead.
+      - uses: maxbenschop/pr-trust@<release commit hash>
+        with:
+          validate: .github/trust.yml

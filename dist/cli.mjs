@@ -57,10 +57,10 @@ var require_identity = __commonJS({
     var NODE_TYPE = /* @__PURE__ */ Symbol.for("yaml.node.type");
     var isAlias = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === ALIAS;
     var isDocument = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === DOC;
-    var isMap = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
+    var isMap2 = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === MAP;
     var isPair = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === PAIR;
-    var isScalar = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SCALAR;
-    var isSeq = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SEQ;
+    var isScalar2 = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SCALAR;
+    var isSeq2 = (node) => !!node && typeof node === "object" && node[NODE_TYPE] === SEQ;
     function isCollection(node) {
       if (node && typeof node === "object")
         switch (node[NODE_TYPE]) {
@@ -70,7 +70,7 @@ var require_identity = __commonJS({
         }
       return false;
     }
-    function isNode(node) {
+    function isNode2(node) {
       if (node && typeof node === "object")
         switch (node[NODE_TYPE]) {
           case ALIAS:
@@ -81,7 +81,7 @@ var require_identity = __commonJS({
         }
       return false;
     }
-    var hasAnchor = (node) => (isScalar(node) || isCollection(node)) && !!node.anchor;
+    var hasAnchor = (node) => (isScalar2(node) || isCollection(node)) && !!node.anchor;
     exports.ALIAS = ALIAS;
     exports.DOC = DOC;
     exports.MAP = MAP;
@@ -93,11 +93,11 @@ var require_identity = __commonJS({
     exports.isAlias = isAlias;
     exports.isCollection = isCollection;
     exports.isDocument = isDocument;
-    exports.isMap = isMap;
-    exports.isNode = isNode;
+    exports.isMap = isMap2;
+    exports.isNode = isNode2;
     exports.isPair = isPair;
-    exports.isScalar = isScalar;
-    exports.isSeq = isSeq;
+    exports.isScalar = isScalar2;
+    exports.isSeq = isSeq2;
   }
 });
 
@@ -4205,9 +4205,9 @@ var require_resolve_flow_collection = __commonJS({
     var blockMsg = "Block collections are not allowed within flow collections";
     var isBlock = (token) => token && (token.type === "block-map" || token.type === "block-seq");
     function resolveFlowCollection({ composeNode, composeEmptyNode }, ctx, fc, onError, tag) {
-      const isMap = fc.start.source === "{";
-      const fcName = isMap ? "flow map" : "flow sequence";
-      const NodeClass = tag?.nodeClass ?? (isMap ? YAMLMap.YAMLMap : YAMLSeq.YAMLSeq);
+      const isMap2 = fc.start.source === "{";
+      const fcName = isMap2 ? "flow map" : "flow sequence";
+      const NodeClass = tag?.nodeClass ?? (isMap2 ? YAMLMap.YAMLMap : YAMLSeq.YAMLSeq);
       const coll = new NodeClass(ctx.schema);
       coll.flow = true;
       const atRoot = ctx.atRoot;
@@ -4243,7 +4243,7 @@ var require_resolve_flow_collection = __commonJS({
             offset = props.end;
             continue;
           }
-          if (!isMap && ctx.options.strict && utilContainsNewline.containsNewline(key))
+          if (!isMap2 && ctx.options.strict && utilContainsNewline.containsNewline(key))
             onError(
               key,
               // checked by containsNewline()
@@ -4283,7 +4283,7 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep && !props.found) {
+        if (!isMap2 && !sep && !props.found) {
           const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
@@ -4306,7 +4306,7 @@ var require_resolve_flow_collection = __commonJS({
             startOnNewline: false
           });
           if (valueProps.found) {
-            if (!isMap && !props.found && ctx.options.strict) {
+            if (!isMap2 && !props.found && ctx.options.strict) {
               if (sep)
                 for (const st of sep) {
                   if (st === valueProps.found)
@@ -4338,7 +4338,7 @@ var require_resolve_flow_collection = __commonJS({
           const pair = new Pair.Pair(keyNode, valueNode);
           if (ctx.options.keepSourceTokens)
             pair.srcToken = collItem;
-          if (isMap) {
+          if (isMap2) {
             const map = coll;
             if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
               onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
@@ -4354,7 +4354,7 @@ var require_resolve_flow_collection = __commonJS({
           offset = valueNode ? valueNode.range[2] : valueProps.end;
         }
       }
-      const expectedEnd = isMap ? "}" : "]";
+      const expectedEnd = isMap2 ? "}" : "]";
       const [ce, ...ee] = fc.end;
       let cePos = offset;
       if (ce?.source === expectedEnd)
@@ -5641,7 +5641,7 @@ var require_cst = __commonJS({
     var FLOW_END = "";
     var SCALAR = "";
     var isCollection = (token) => !!token && "items" in token;
-    var isScalar = (token) => !!token && (token.type === "scalar" || token.type === "single-quoted-scalar" || token.type === "double-quoted-scalar" || token.type === "block-scalar");
+    var isScalar2 = (token) => !!token && (token.type === "scalar" || token.type === "single-quoted-scalar" || token.type === "double-quoted-scalar" || token.type === "block-scalar");
     function prettyToken(token) {
       switch (token) {
         case BOM:
@@ -5725,7 +5725,7 @@ var require_cst = __commonJS({
     exports.FLOW_END = FLOW_END;
     exports.SCALAR = SCALAR;
     exports.isCollection = isCollection;
-    exports.isScalar = isScalar;
+    exports.isScalar = isScalar2;
     exports.prettyToken = prettyToken;
     exports.tokenType = tokenType;
   }
@@ -6324,7 +6324,7 @@ var require_lexer = __commonJS({
 var require_line_counter = __commonJS({
   "node_modules/.pnpm/yaml@2.9.1/node_modules/yaml/dist/parse/line-counter.js"(exports) {
     "use strict";
-    var LineCounter = class {
+    var LineCounter2 = class {
       constructor() {
         this.lineStarts = [];
         this.addNewLine = (offset) => this.lineStarts.push(offset);
@@ -6347,7 +6347,7 @@ var require_line_counter = __commonJS({
         };
       }
     };
-    exports.LineCounter = LineCounter;
+    exports.LineCounter = LineCounter2;
   }
 });
 
@@ -6925,14 +6925,14 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs4 = this.flowScalar(this.type);
+              const fs5 = this.flowScalar(this.type);
               if (atNextItem || it.value) {
-                map.items.push({ start, key: fs4, sep: [] });
+                map.items.push({ start, key: fs5, sep: [] });
                 this.onKeyLine = true;
               } else if (it.sep) {
-                this.stack.push(fs4);
+                this.stack.push(fs5);
               } else {
-                Object.assign(it, { key: fs4, sep: [] });
+                Object.assign(it, { key: fs5, sep: [] });
                 this.onKeyLine = true;
               }
               return;
@@ -7060,13 +7060,13 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs4 = this.flowScalar(this.type);
+              const fs5 = this.flowScalar(this.type);
               if (!it || it.value)
-                fc.items.push({ start: [], key: fs4, sep: [] });
+                fc.items.push({ start: [], key: fs5, sep: [] });
               else if (it.sep)
-                this.stack.push(fs4);
+                this.stack.push(fs5);
               else
-                Object.assign(it, { key: fs4, sep: [] });
+                Object.assign(it, { key: fs5, sep: [] });
               return;
             }
             case "flow-map-end":
@@ -7255,7 +7255,7 @@ var require_public_api = __commonJS({
         return docs;
       return Object.assign([], { empty: true }, composer$1.streamInfo());
     }
-    function parseDocument(source, options = {}) {
+    function parseDocument2(source, options = {}) {
       const { lineCounter: lineCounter2, prettyErrors } = parseOptions(options);
       const parser$1 = new parser.Parser(lineCounter2?.addNewLine);
       const composer$1 = new composer.Composer(options);
@@ -7281,7 +7281,7 @@ var require_public_api = __commonJS({
       } else if (options === void 0 && reviver && typeof reviver === "object") {
         options = reviver;
       }
-      const doc = parseDocument(src, options);
+      const doc = parseDocument2(src, options);
       if (!doc)
         return null;
       doc.warnings.forEach((warning) => log.warn(doc.options.logLevel, warning));
@@ -7317,7 +7317,7 @@ var require_public_api = __commonJS({
     }
     exports.parse = parse;
     exports.parseAllDocuments = parseAllDocuments;
-    exports.parseDocument = parseDocument;
+    exports.parseDocument = parseDocument2;
     exports.stringify = stringify;
   }
 });
@@ -7427,98 +7427,105 @@ function parseConfig(text) {
   try {
     raw = (0, import_yaml.parse)(text);
   } catch (error) {
-    throw new ConfigError([`not valid YAML: ${error.message}`]);
+    const line = error.linePos?.[0]?.line;
+    throw new ConfigError([{ message: `not valid YAML: ${error.message}`, path: [], ...line ? { line } : {} }]);
   }
   return validateConfig(raw ?? {});
 }
 function validateConfig(raw) {
-  const problems = [];
-  if (!isObject(raw)) throw new ConfigError(["the config must be a mapping"]);
-  const known = /* @__PURE__ */ new Set([
-    "version",
-    "own_list",
-    "admit",
-    "exempt_paths",
-    "on_unknown",
-    "on_denounced",
-    "comment",
-    "message_file",
-    "labels"
-  ]);
+  const problems = new Problems();
+  if (!isObject(raw)) throw new ConfigError(["the config must be a mapping of keys such as admit: and on_unknown:"]);
   for (const key of Object.keys(raw)) {
-    if (!known.has(key)) problems.push(`unknown key "${key}"`);
+    if (!CONFIG_KEYS.includes(key)) problems.add([key], `unknown key "${key}"${didYouMean(key, CONFIG_KEYS)}`);
   }
-  if (raw.version !== void 0 && raw.version !== 1) problems.push(`version must be 1`);
+  if (raw.version !== void 0 && raw.version !== 1) problems.add(["version"], `version must be 1`);
   const ownList = parseOwnList(raw.own_list, problems);
   const admit = [];
   if (raw.admit !== void 0) {
-    if (!Array.isArray(raw.admit)) problems.push(`admit must be a list`);
-    else raw.admit.forEach((entry, i) => {
-      const rule = parseRule(entry, `admit[${i}]`, problems);
+    if (!Array.isArray(raw.admit)) {
+      problems.add(["admit"], `admit must be a list; start each rule with "- ", as in "- list: owner/repo"`);
+    } else raw.admit.forEach((entry, i) => {
+      const rule = parseRule(entry, i, problems);
       if (rule) admit.push(rule);
     });
   }
   const exemptPaths = [];
   if (raw.exempt_paths !== void 0) {
     if (!Array.isArray(raw.exempt_paths) || !raw.exempt_paths.every((p) => typeof p === "string" && p !== "")) {
-      problems.push(`exempt_paths must be a list of glob patterns`);
+      problems.add(
+        ["exempt_paths"],
+        typeof raw.exempt_paths === "string" ? `exempt_paths must be a list of glob patterns, such as ["${raw.exempt_paths}"]` : `exempt_paths must be a list of glob patterns`
+      );
     } else exemptPaths.push(...raw.exempt_paths);
   }
-  let onUnknown = "label";
-  if (raw.on_unknown !== void 0) {
-    if (raw.on_unknown === "label" || raw.on_unknown === "close") onUnknown = raw.on_unknown;
-    else problems.push(`on_unknown must be "label" or "close"`);
-  }
-  let onDenounced = "close";
-  if (raw.on_denounced !== void 0) {
-    if (raw.on_denounced === "label" || raw.on_denounced === "close") onDenounced = raw.on_denounced;
-    else problems.push(`on_denounced must be "label" or "close"`);
-  }
-  let comment = "unknown";
-  if (raw.comment !== void 0) {
-    if (raw.comment === "unknown" || raw.comment === "never") comment = raw.comment;
-    else problems.push(`comment must be "unknown" or "never"`);
-  }
+  const onUnknown = parseChoice(raw, "on_unknown", ["label", "close"], "label", problems);
+  const onDenounced = parseChoice(raw, "on_denounced", ["label", "close"], "close", problems);
+  const comment = parseChoice(raw, "comment", ["unknown", "never"], "unknown", problems);
   let messageFile = null;
   if (raw.message_file !== void 0) {
     if (typeof raw.message_file === "string" && raw.message_file.trim() !== "") messageFile = raw.message_file.trim();
-    else problems.push(`message_file must be a file path`);
+    else problems.add(["message_file"], `message_file must be a file path`);
   }
   const labels = { ...DEFAULT_LABELS };
   if (raw.labels !== void 0) {
-    if (!isObject(raw.labels)) problems.push(`labels must be a mapping`);
+    if (!isObject(raw.labels)) problems.add(["labels"], `labels must be a mapping`);
     else {
       for (const [key, value] of Object.entries(raw.labels)) {
-        if (!(key in DEFAULT_LABELS)) problems.push(`labels: unknown key "${key}" (expected admitted, unknown, denounced, error)`);
-        else if (typeof value !== "string" || value.length > 50) problems.push(`labels.${key} must be text of at most 50 characters`);
-        else labels[key] = value.trim();
+        if (!(key in DEFAULT_LABELS)) {
+          const hint = didYouMean(key, Object.keys(DEFAULT_LABELS)) || " (expected admitted, unknown, denounced, error)";
+          problems.add(["labels", key], `labels: unknown key "${key}"${hint}`);
+        } else if (typeof value !== "string" || value.length > 50) {
+          problems.add(["labels", key], `labels.${key} must be text of at most 50 characters`);
+        } else labels[key] = value.trim();
       }
     }
   }
-  if (problems.length > 0) throw new ConfigError(problems);
+  if (problems.length > 0) throw new ConfigError(problems.list);
   return { ownList, admit, exemptPaths, onUnknown, onDenounced, comment, messageFile, labels };
+}
+function parseChoice(raw, key, choices, fallback, problems) {
+  const value = raw[key];
+  if (value === void 0) return fallback;
+  if (choices.includes(value)) return value;
+  const hint = typeof value === "string" ? didYouMean(value, choices) : "";
+  problems.add([key], `${key} must be ${choices.map((c) => `"${c}"`).join(" or ")}${hint}`);
+  return fallback;
 }
 function parseOwnList(value, problems) {
   if (value === void 0 || value === "auto") return { path: null };
   if (value === false || value === "none" || value === null) return null;
   if (typeof value === "string" && value.trim() !== "") return { path: value.trim() };
-  problems.push(`own_list must be "auto", "none", or a file path`);
+  problems.add(["own_list"], `own_list must be "auto", "none", or a file path`);
   return null;
 }
-function parseRule(entry, where, problems) {
+function parseRule(entry, index, problems) {
+  const where = `admit[${index}]`;
+  const path3 = ["admit", index];
   if (!isObject(entry)) {
-    problems.push(`${where} must be a mapping such as { list: owner/repo } or { merged: {...} }`);
+    const asList = typeof entry === "string" ? parseListRef(entry) : null;
+    problems.add(
+      path3,
+      asList ? `${where} must be a rule; to trust ${asList.repo}'s Vouch list, write "- list: ${entry}"` : `${where} must be a mapping such as { list: owner/repo } or { merged: {...} }`
+    );
     return null;
   }
   const keys = Object.keys(entry);
   if (keys.length !== 1) {
-    problems.push(`${where} must have exactly one key ("list" or "merged")`);
+    const misplaced = keys.filter((k) => MERGED_KEYS.includes(k));
+    problems.add(
+      path3,
+      "merged" in entry && misplaced.length > 0 ? `${where} must have exactly one key ("list" or "merged"); ${misplaced.join(" and ")} belong${misplaced.length === 1 ? "s" : ""} inside it: indent ${misplaced.length === 1 ? "it" : "them"} further than merged:, or write merged: { repo: self, min: 1, within: 24mo }` : `${where} must have exactly one key ("list" or "merged")`
+    );
     return null;
   }
   if ("list" in entry) {
     const source = parseListRef(entry.list);
     if (!source) {
-      problems.push(`${where}.list must be "owner/repo" or "owner/repo:path/to/VOUCHED.td"`);
+      const url = typeof entry.list === "string" ? /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/.exec(entry.list.trim()) : null;
+      problems.add(
+        [...path3, "list"],
+        `${where}.list must be "owner/repo" or "owner/repo:path/to/VOUCHED.td"${url ? ` (did you mean "${url[1]}"?)` : ""}`
+      );
       return null;
     }
     return { kind: "list", source };
@@ -7526,30 +7533,61 @@ function parseRule(entry, where, problems) {
   if ("merged" in entry) {
     const m = entry.merged;
     if (!isObject(m)) {
-      problems.push(`${where}.merged must be a mapping like { repo: owner/repo, min: 3, within: 24mo }`);
+      problems.add([...path3, "merged"], `${where}.merged must be a mapping like { repo: owner/repo, min: 3, within: 24mo }`);
       return null;
     }
     const before = problems.length;
     for (const key of Object.keys(m)) {
-      if (!["repo", "min", "within"].includes(key)) problems.push(`${where}.merged: unknown key "${key}"`);
+      if (!MERGED_KEYS.includes(key)) problems.add([...path3, "merged", key], `${where}.merged: unknown key "${key}"${didYouMean(key, MERGED_KEYS)}`);
     }
     const repo = typeof m.repo === "string" ? m.repo.trim() : "";
-    if (repo !== SELF && !isRepoName(repo)) problems.push(`${where}.merged.repo must be "self" or "owner/repo"`);
+    if (repo !== SELF && !isRepoName(repo)) problems.add([...path3, "merged", "repo"], `${where}.merged.repo must be "self" or "owner/repo"`);
     const min = m.min ?? 1;
     if (typeof min !== "number" || !Number.isInteger(min) || min < 1) {
-      problems.push(`${where}.merged.min must be a whole number of at least 1`);
+      problems.add([...path3, "merged", "min"], `${where}.merged.min must be a whole number of at least 1`);
     }
     let within = DEFAULT_WITHIN;
     if (m.within !== void 0) {
       const parsed = typeof m.within === "string" ? parseDuration(m.within) : null;
       if (parsed) within = parsed;
-      else problems.push(`${where}.merged.within must look like 90d, 12w, 24mo or 2y`);
+      else {
+        const months = typeof m.within === "string" ? /^\s*(\d+)\s*m(?:onths?)?\s*$/i.exec(m.within) : null;
+        const hint2 = months ? ` (did you mean "${months[1]}mo"?)` : "";
+        problems.add([...path3, "merged", "within"], `${where}.merged.within must look like 90d, 12w, 24mo or 2y${hint2}`);
+      }
     }
     if (problems.length > before) return null;
     return { kind: "merged", repo, min, within };
   }
-  problems.push(`${where} has unknown rule "${keys[0]}" (expected "list" or "merged")`);
+  const hint = didYouMean(keys[0], ["list", "merged"]) || ` (expected "list" or "merged")`;
+  problems.add(path3, `${where} has unknown rule "${keys[0]}"${hint}`);
   return null;
+}
+function didYouMean(value, options) {
+  const want = value.trim().toLowerCase().replace(/[-\s]+/g, "_");
+  let best = null;
+  let bestDistance = Infinity;
+  for (const option of options) {
+    const prefix = Math.min(want.length, option.length) >= 3 && (want.startsWith(option) || option.startsWith(want));
+    const distance = prefix ? 1 : editDistance(want, option);
+    if (distance < bestDistance) {
+      best = option;
+      bestDistance = distance;
+    }
+  }
+  if (best === null || best === value) return "";
+  return bestDistance <= Math.min(2, Math.floor(best.length / 3)) ? ` (did you mean "${best}"?)` : "";
+}
+function editDistance(a, b) {
+  let previous = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
 }
 function parseListRef(value) {
   if (typeof value !== "string") return null;
@@ -7573,7 +7611,7 @@ function describeRule(rule) {
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var import_yaml, DEFAULT_LABELS, SELF, DEFAULT_WITHIN, VOUCH_FILE_CANDIDATES, DEFAULT_CONFIG_YAML, ConfigError, REPO;
+var import_yaml, DEFAULT_LABELS, SELF, DEFAULT_WITHIN, VOUCH_FILE_CANDIDATES, DEFAULT_CONFIG_YAML, ConfigError, Problems, REPO, CONFIG_KEYS, MERGED_KEYS;
 var init_config = __esm({
   "src/engine/config.ts"() {
     "use strict";
@@ -7594,13 +7632,37 @@ admit:
 `;
     ConfigError = class extends Error {
       problems;
+      details;
       constructor(problems) {
+        const details = problems.map((p) => typeof p === "string" ? { message: p, path: [] } : p);
         super(`Invalid trust config:
-${problems.map((p) => `  - ${p}`).join("\n")}`);
-        this.problems = problems;
+${details.map((p) => `  - ${p.message}`).join("\n")}`);
+        this.problems = details.map((p) => p.message);
+        this.details = details;
+      }
+    };
+    Problems = class {
+      list = [];
+      add(path3, message) {
+        this.list.push({ message, path: path3 });
+      }
+      get length() {
+        return this.list.length;
       }
     };
     REPO = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+    CONFIG_KEYS = [
+      "version",
+      "own_list",
+      "admit",
+      "exempt_paths",
+      "on_unknown",
+      "on_denounced",
+      "comment",
+      "message_file",
+      "labels"
+    ];
+    MERGED_KEYS = ["repo", "min", "within"];
   }
 });
 
@@ -9232,9 +9294,9 @@ var require_picomatch = __commonJS({
     var utils = require_utils();
     var constants = require_constants();
     var isObject2 = (val) => val && typeof val === "object" && !Array.isArray(val);
-    var picomatch2 = (glob, options, returnState = false) => {
+    var picomatch3 = (glob, options, returnState = false) => {
       if (Array.isArray(glob)) {
-        const fns = glob.map((input) => picomatch2(input, options, returnState));
+        const fns = glob.map((input) => picomatch3(input, options, returnState));
         const arrayMatcher = (str) => {
           for (const isMatch of fns) {
             const state2 = isMatch(str);
@@ -9250,16 +9312,16 @@ var require_picomatch = __commonJS({
       }
       const opts = options || {};
       const posix = opts.windows;
-      const regex = isState ? picomatch2.compileRe(glob, options) : picomatch2.makeRe(glob, options, false, true);
+      const regex = isState ? picomatch3.compileRe(glob, options) : picomatch3.makeRe(glob, options, false, true);
       const state = regex.state;
       delete regex.state;
       let isIgnored = () => false;
       if (opts.ignore) {
         const ignoreOpts = { ...options, ignore: null, onMatch: null, onResult: null };
-        isIgnored = picomatch2(opts.ignore, ignoreOpts, returnState);
+        isIgnored = picomatch3(opts.ignore, ignoreOpts, returnState);
       }
       const matcher = (input, returnObject = false) => {
-        const { isMatch, match, output } = picomatch2.test(input, regex, options, { glob, posix });
+        const { isMatch, match, output } = picomatch3.test(input, regex, options, { glob, posix });
         const result = { glob, state, regex, posix, input, output, match, isMatch };
         if (typeof opts.onResult === "function") {
           opts.onResult(result);
@@ -9285,7 +9347,7 @@ var require_picomatch = __commonJS({
       }
       return matcher;
     };
-    picomatch2.test = (input, regex, options, { glob, posix } = {}) => {
+    picomatch3.test = (input, regex, options, { glob, posix } = {}) => {
       if (typeof input !== "string") {
         throw new TypeError("Expected input to be a string");
       }
@@ -9302,24 +9364,24 @@ var require_picomatch = __commonJS({
       }
       if (match === false || opts.capture === true) {
         if (opts.matchBase === true || opts.basename === true) {
-          match = picomatch2.matchBase(input, regex, options, posix);
+          match = picomatch3.matchBase(input, regex, options, posix);
         } else {
           match = regex.exec(output);
         }
       }
       return { isMatch: Boolean(match), match, output };
     };
-    picomatch2.matchBase = (input, glob, options, posix = options && options.windows) => {
-      const regex = glob instanceof RegExp ? glob : picomatch2.makeRe(glob, options);
+    picomatch3.matchBase = (input, glob, options, posix = options && options.windows) => {
+      const regex = glob instanceof RegExp ? glob : picomatch3.makeRe(glob, options);
       return regex.test(utils.basename(input, { windows: posix }));
     };
-    picomatch2.isMatch = (str, patterns, options) => picomatch2(patterns, options)(str);
-    picomatch2.parse = (pattern, options) => {
-      if (Array.isArray(pattern)) return pattern.map((p) => picomatch2.parse(p, options));
+    picomatch3.isMatch = (str, patterns, options) => picomatch3(patterns, options)(str);
+    picomatch3.parse = (pattern, options) => {
+      if (Array.isArray(pattern)) return pattern.map((p) => picomatch3.parse(p, options));
       return parse(pattern, { ...options, fastpaths: false });
     };
-    picomatch2.scan = (input, options) => scan(input, options);
-    picomatch2.compileRe = (state, options, returnOutput = false, returnState = false) => {
+    picomatch3.scan = (input, options) => scan(input, options);
+    picomatch3.compileRe = (state, options, returnOutput = false, returnState = false) => {
       if (returnOutput === true) {
         return state.output;
       }
@@ -9330,13 +9392,13 @@ var require_picomatch = __commonJS({
       if (state && state.negated === true) {
         source = `^(?!${source}).*$`;
       }
-      const regex = picomatch2.toRegex(source, options);
+      const regex = picomatch3.toRegex(source, options);
       if (returnState === true) {
         regex.state = state;
       }
       return regex;
     };
-    picomatch2.makeRe = (input, options = {}, returnOutput = false, returnState = false) => {
+    picomatch3.makeRe = (input, options = {}, returnOutput = false, returnState = false) => {
       if (!input || typeof input !== "string") {
         throw new TypeError("Expected a non-empty string");
       }
@@ -9347,9 +9409,9 @@ var require_picomatch = __commonJS({
       if (!parsed.output) {
         parsed = parse(input, options);
       }
-      return picomatch2.compileRe(parsed, options, returnOutput, returnState);
+      return picomatch3.compileRe(parsed, options, returnOutput, returnState);
     };
-    picomatch2.toRegex = (source, options) => {
+    picomatch3.toRegex = (source, options) => {
       try {
         const opts = options || {};
         return new RegExp(source, opts.flags || (opts.nocase ? "i" : ""));
@@ -9358,8 +9420,8 @@ var require_picomatch = __commonJS({
         return /$^/;
       }
     };
-    picomatch2.constants = constants;
-    module.exports = picomatch2;
+    picomatch3.constants = constants;
+    module.exports = picomatch3;
   }
 });
 
@@ -9369,14 +9431,14 @@ var require_picomatch2 = __commonJS({
     "use strict";
     var pico = require_picomatch();
     var utils = require_utils();
-    function picomatch2(glob, options, returnState = false) {
+    function picomatch3(glob, options, returnState = false) {
       if (options && (options.windows === null || options.windows === void 0)) {
         options = { ...options, windows: utils.isWindows() };
       }
       return pico(glob, options, returnState);
     }
-    Object.assign(picomatch2, pico);
-    module.exports = picomatch2;
+    Object.assign(picomatch3, pico);
+    module.exports = picomatch3;
   }
 });
 
@@ -9909,8 +9971,11 @@ var init_queries = __esm({
 
 // src/action/live.ts
 async function readDefaultBranchFiles(gh, repo, paths) {
+  return readFilesAt(gh, repo, "HEAD", paths);
+}
+async function readFilesAt(gh, repo, ref, paths) {
   const [owner, name] = repo.split("/");
-  const fields = paths.map((p, i) => `f${i}: object(expression: ${JSON.stringify(`HEAD:${p}`)}) { ... on Blob { text } }`).join("\n    ");
+  const fields = paths.map((p, i) => `f${i}: object(expression: ${JSON.stringify(`${ref}:${p}`)}) { ... on Blob { text } }`).join("\n    ");
   const result = await gh.graphql(
     `query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
@@ -10914,20 +10979,423 @@ Auth: GITHUB_TOKEN, GH_TOKEN, or the GitHub CLI's login. Responses are cached in
   }
 });
 
+// src/engine/lint.ts
+function lintConfig(text) {
+  const locate = createLocator(text);
+  let config;
+  try {
+    config = parseConfig(text);
+  } catch (error) {
+    if (!(error instanceof ConfigError)) throw error;
+    const findings = error.details.map((p) => ({
+      level: "error",
+      message: p.message,
+      path: p.path,
+      line: p.line ?? locate(p.path)
+    }));
+    return { config: null, findings };
+  }
+  return { config, findings: configWarnings(config).map((w) => ({ ...w, line: locate(w.path) })) };
+}
+function configWarnings(config) {
+  const warnings = [];
+  const warn = (path3, message) => warnings.push({ level: "warning", message, path: path3 });
+  if (config.onUnknown === "close" && config.ownList === null && config.admit.length === 0) {
+    warn(
+      ["on_unknown"],
+      "on_unknown is close, but with own_list: none and no admit rules nobody can be admitted, so every pull request from an outside contributor is closed (except ones that change only exempt paths)"
+    );
+  }
+  config.admit.forEach((rule, j) => {
+    for (let i = 0; i < config.admit.length; i++) {
+      if (i === j) continue;
+      const other = config.admit[i];
+      if (rule.kind === "list" && other.kind === "list") {
+        if (i < j && listKey(rule.source) === listKey(other.source)) {
+          warn(["admit", j], `admit[${j}] repeats admit[${i}] (${describeRule(rule)}); remove one of them`);
+          return;
+        }
+      } else if (rule.kind === "merged" && other.kind === "merged" && sameRepo(rule, other)) {
+        const same = rule.min === other.min && windowDays(rule) === windowDays(other);
+        if (same && i < j) {
+          warn(["admit", j], `admit[${j}] repeats admit[${i}] (${describeRule(rule)}); remove one of them`);
+          return;
+        }
+        if (!same && other.min <= rule.min && windowDays(other) >= windowDays(rule)) {
+          warn(
+            ["admit", j],
+            `admit[${j}] (${describeRule(rule)}) never admits anyone: admit[${i}] (${describeRule(other)}) already admits everyone it would. Remove it, or make admit[${i}] stricter`
+          );
+          return;
+        }
+      }
+    }
+  });
+  config.admit.forEach((rule, i) => {
+    if (rule.kind !== "merged") return;
+    const days = windowDays(rule);
+    if (days < SHORT_WINDOW_DAYS) {
+      warn(
+        ["admit", i, "merged", "within"],
+        `admit[${i}].merged.within is only ${days} day${days === 1 ? "" : "s"}: only authors with a pull request merged that recently pass. For months, write mo, as in 24mo`
+      );
+    }
+  });
+  config.exemptPaths.forEach((pattern, i) => {
+    if (/^\.?\//.test(pattern)) {
+      warn(
+        ["exempt_paths", i],
+        `exempt_paths pattern "${pattern}" never matches: changed files are named from the repository root, without a leading "/" or "./" (write "${pattern.replace(/^\.?\/+/, "")}")`
+      );
+      return;
+    }
+    const matches = (0, import_picomatch2.default)(pattern, { dot: true });
+    if (PROBE_PATHS.every((p) => matches(p))) {
+      warn(
+        ["exempt_paths", i],
+        `exempt_paths pattern "${pattern}" matches nearly every file (such as src/main.rs and package.json), so almost every pull request skips the check`
+      );
+    }
+  });
+  for (const [key, path3] of [
+    ["own_list", config.ownList?.path ?? null],
+    ["message_file", config.messageFile]
+  ]) {
+    if (path3 !== null && !isPlainPath(path3)) {
+      warn(
+        [key],
+        `${key} "${path3}" is never found: write the path from the repository root, without a leading "/" or "./" and without "..", as in .github/${key === "own_list" ? "VOUCHED.td" : "trust-message.md"}`
+      );
+    }
+  }
+  const seen = /* @__PURE__ */ new Map();
+  for (const [key, label] of Object.entries(config.labels)) {
+    if (label === "") continue;
+    const first = seen.get(label.toLowerCase());
+    if (first) {
+      warn(
+        ["labels", key],
+        `labels.${key} and labels.${first} are both "${label}" (GitHub ignores case in label names), so that label cannot tell the two results apart`
+      );
+    } else seen.set(label.toLowerCase(), key);
+  }
+  return warnings;
+}
+function sameRepo(a, b) {
+  return a.repo.toLowerCase() === b.repo.toLowerCase();
+}
+function windowDays(rule) {
+  const at = new Date(Date.UTC(2026, 0, 1));
+  return Math.round((at.getTime() - subtractDuration(at, rule.within).getTime()) / 864e5);
+}
+function isPlainPath(path3) {
+  return path3.split("/").every((part) => part !== "" && part !== "." && part !== "..");
+}
+function createLocator(text) {
+  const counter = new import_yaml2.LineCounter();
+  const doc = (0, import_yaml2.parseDocument)(text, { lineCounter: counter });
+  const lineOf = (node) => (0, import_yaml2.isNode)(node) && node.range ? counter.linePos(node.range[0]).line : null;
+  return (path3) => {
+    if (doc.errors.length > 0) return null;
+    let node = doc.contents;
+    let line = null;
+    for (const key of path3) {
+      if ((0, import_yaml2.isMap)(node)) {
+        const pair = node.items.find((p) => ((0, import_yaml2.isScalar)(p.key) ? p.key.value : p.key) === key);
+        if (!pair) break;
+        line = lineOf(pair.key) ?? line;
+        node = pair.value;
+      } else if ((0, import_yaml2.isSeq)(node) && typeof key === "number") {
+        const item = node.items[key];
+        if (item === void 0) break;
+        line = lineOf(item) ?? line;
+        node = item;
+      } else break;
+    }
+    return line;
+  };
+}
+function formatPath(path3) {
+  return path3.map((key, i) => typeof key === "number" ? `[${key}]` : i === 0 ? key : `.${key}`).join("");
+}
+function formatFinding(file, finding) {
+  return `${file}${finding.line ? `:${finding.line}` : ""}: ${finding.level}: ${finding.message}`;
+}
+function countFindings(findings) {
+  const errors = findings.filter((f) => f.level === "error").length;
+  return { errors, warnings: findings.length - errors };
+}
+function summaryLine(file, findings, checked) {
+  const { errors, warnings } = countFindings(findings);
+  if (errors + warnings === 0) return `${file}: no problems found (${checked})`;
+  const parts = [];
+  if (errors > 0) parts.push(`${errors} error${errors === 1 ? "" : "s"}`);
+  if (warnings > 0) parts.push(`${warnings} warning${warnings === 1 ? "" : "s"}`);
+  return `${file}: ${parts.join(", ")} (${checked})`;
+}
+var import_picomatch2, import_yaml2, SHORT_WINDOW_DAYS, PROBE_PATHS;
+var init_lint = __esm({
+  "src/engine/lint.ts"() {
+    "use strict";
+    import_picomatch2 = __toESM(require_picomatch2(), 1);
+    import_yaml2 = __toESM(require_dist(), 1);
+    init_config();
+    init_duration();
+    SHORT_WINDOW_DAYS = 28;
+    PROBE_PATHS = ["src/main.rs", "lib/core/index.ts", "package.json", ".github/workflows/ci.yml"];
+  }
+});
+
+// src/action/validate.ts
+async function validateRules(text, online) {
+  const { config, findings } = lintConfig(text);
+  const notes = [];
+  if (config && online) {
+    const locate = createLocator(text);
+    const result = await onlineProblems(config, online);
+    findings.push(...result.problems.map((p) => ({ ...p, line: locate(p.path) })));
+    notes.push(...result.notes);
+  } else if (!config && online) {
+    notes.push("The online checks run once the errors above are fixed.");
+  }
+  findings.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  return { findings, notes, online: online !== void 0 };
+}
+async function onlineProblems(config, options) {
+  const { gh, repo } = options;
+  const ref = options.ref ?? "HEAD";
+  const refName = options.refName ?? (ref === "HEAD" ? "on the default branch" : `at ${ref}`);
+  const problems = [];
+  const notes = [];
+  const error = (path3, message) => problems.push({ level: "error", message, path: path3 });
+  const warn = (path3, message) => problems.push({ level: "warning", message, path: path3 });
+  const names = /* @__PURE__ */ new Map();
+  const currentName = (name) => {
+    const key = name.toLowerCase();
+    let pending = names.get(key);
+    if (!pending) {
+      const [owner, short] = name.split("/");
+      pending = gh.graphql(
+        `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { nameWithOwner } }`,
+        { owner, name: short }
+      ).then(
+        (r) => r.repository?.nameWithOwner ?? null,
+        (e) => {
+          if (/could not resolve to a repository/i.test(e.message)) return null;
+          throw e;
+        }
+      );
+      names.set(key, pending);
+    }
+    return pending;
+  };
+  const missing = (name) => `${name} does not exist, or this token cannot read it`;
+  const renamedTo = (name, current) => current !== null && current.toLowerCase() !== name.toLowerCase() ? current : null;
+  const searchable = /* @__PURE__ */ new Map();
+  const isSearchable = (name) => {
+    let pending = searchable.get(name.toLowerCase());
+    if (!pending) {
+      pending = gh.graphql(
+        `query($q: String!) { search(query: $q, type: ISSUE, first: 1) { issueCount } }`,
+        { q: `repo:${name} is:pr` }
+      ).then((r) => r.search.issueCount > 0);
+      searchable.set(name.toLowerCase(), pending);
+    }
+    return pending;
+  };
+  const home = repo === null ? null : await currentName(repo);
+  if (repo !== null && home === null) {
+    error([], `${missing(repo)}, so its own list, message file and merged rules on "self" were not checked`);
+  }
+  if (repo === null) {
+    notes.push('No repository given, so merged rules on "self", own_list and message_file were not checked online.');
+  }
+  for (const [i, rule] of config.admit.entries()) {
+    if (rule.kind === "list") {
+      const path4 = ["admit", i, "list"];
+      const named = rule.source.repo;
+      const current2 = await currentName(named);
+      if (current2 === null) {
+        error(path4, `${missing(named)}, so admit[${i}] admits no one`);
+        continue;
+      }
+      const moved2 = renamedTo(named, current2);
+      if (moved2) {
+        warn(path4, `${named} is now ${moved2}. The rule still works, but update it to "list: ${moved2}${rule.source.path ? `:${rule.source.path}` : ""}"`);
+      }
+      const candidates = rule.source.path ? [rule.source.path] : VOUCH_FILE_CANDIDATES;
+      const texts = await readFilesAt(gh, current2, "HEAD", candidates);
+      const found = texts.find((t) => t !== null);
+      if (found == null) {
+        error(path4, `${current2} has no Vouch list at ${candidates.join(" or ")} on its default branch, so admit[${i}] admits no one`);
+      } else if (parseVouchFile(found).vouched.size === 0) {
+        warn(path4, `the Vouch list in ${current2} vouches for no one yet, so admit[${i}] admits no one for now`);
+      }
+      continue;
+    }
+    const path3 = ["admit", i, "merged", "repo"];
+    if (rule.repo === SELF) {
+      if (home && !await isSearchable(home)) warn(path3, notSearchable(home));
+      continue;
+    }
+    const current = await currentName(rule.repo);
+    if (current === null) {
+      error(path3, `${missing(rule.repo)}, so admit[${i}] admits no one`);
+      continue;
+    }
+    const moved = renamedTo(rule.repo, current);
+    if (moved) {
+      warn(path3, `${rule.repo} is now ${moved}. GitHub search does not follow renames, so the Action looks up the new name on every check; update the rule to "repo: ${moved}"`);
+    }
+    if (!await isSearchable(current)) warn(path3, notSearchable(current));
+  }
+  if (home !== null) {
+    const ownPaths = config.ownList ? config.ownList.path ? [config.ownList.path] : VOUCH_FILE_CANDIDATES : [];
+    const paths = [...ownPaths, ...config.messageFile ? [config.messageFile] : []];
+    const texts = paths.length > 0 ? await readFilesAt(gh, home, ref, paths) : [];
+    const ownText = texts.slice(0, ownPaths.length).find((t) => t !== null) ?? null;
+    if (config.ownList?.path && ownText === null) {
+      warn(
+        ["own_list"],
+        `${config.ownList.path} does not exist in ${home} ${refName}. Until it does, every check warns that the list is missing (the first /vouch creates it)`
+      );
+    }
+    if (config.messageFile) {
+      const message = texts[ownPaths.length] ?? null;
+      if (message === null) {
+        warn(["message_file"], `${config.messageFile} does not exist in ${home} ${refName}, so the default message is used`);
+      } else {
+        const unknown = [...new Set([...message.matchAll(/\{([A-Za-z_]+)\}/g)].map((m) => m[1]))].filter(
+          (name) => !MESSAGE_PLACEHOLDERS.includes(name)
+        );
+        for (const name of unknown) {
+          warn(
+            ["message_file"],
+            `${config.messageFile} uses {${name}}, which is not a placeholder and is shown as written${didYouMean(name, MESSAGE_PLACEHOLDERS).replace(/"(\w+)"/, "{$1}")}. Placeholders: ${MESSAGE_PLACEHOLDERS.map((p) => `{${p}}`).join(", ")}`
+          );
+        }
+      }
+    }
+  }
+  return { problems, notes };
+}
+function notSearchable(repo) {
+  return `${repo} is not in GitHub's search index, so the Action counts each author's own merged pull requests instead, reading at most 500 per author, which is slower and can miss merges by very active authors`;
+}
+var MESSAGE_PLACEHOLDERS;
+var init_validate = __esm({
+  "src/action/validate.ts"() {
+    "use strict";
+    init_config();
+    init_lint();
+    init_vouchfile();
+    init_live();
+    MESSAGE_PLACEHOLDERS = ["author", "reason", "repo", "next", "rules", "alert"];
+  }
+});
+
+// src/cli/validate.ts
+var validate_exports = {};
+import fs4 from "node:fs";
+import { parseArgs as parseArgs3 } from "node:util";
+async function main3() {
+  const { values, positionals } = parseArgs3({
+    allowPositionals: true,
+    options: {
+      online: { type: "boolean", default: false },
+      repo: { type: "string" },
+      strict: { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
+      help: { type: "boolean", short: "h", default: false }
+    }
+  });
+  if (values.help || positionals.length > 1) {
+    console.log(USAGE3);
+    return values.help ? 0 : 2;
+  }
+  if (values.repo !== void 0 && !isRepoName(values.repo)) return fail2(`--repo must be owner/repo, got "${values.repo}"`);
+  if (values.repo !== void 0 && !values.online) return fail2("--repo is only used with --online");
+  const file = positionals[0] ?? ".github/trust.yml";
+  let text;
+  try {
+    text = fs4.readFileSync(file, "utf8");
+  } catch (error) {
+    return fail2(`Cannot read ${file}: ${error.message}`);
+  }
+  const online = values.online ? { gh: createClient({ token: resolveToken() }), repo: values.repo ?? null } : void 0;
+  const result = await validateRules(text, online);
+  const { errors, warnings } = countFindings(result.findings);
+  const code = errors > 0 || values.strict && warnings > 0 ? 1 : 0;
+  if (values.json) {
+    const findings = result.findings.map((f) => ({ ...f, path: formatPath(f.path) || null }));
+    console.log(JSON.stringify({ file, ok: code === 0, errors, warnings, online: result.online, findings, notes: result.notes }, null, 2));
+    return code;
+  }
+  for (const finding of result.findings) console.log(formatFinding(file, finding));
+  for (const note of result.notes) console.log(`note: ${note}`);
+  console.log(summaryLine(file, result.findings, result.online ? "offline and online checks" : "offline checks; add --online to check on GitHub"));
+  return code;
+}
+function fail2(message) {
+  console.error(message);
+  return 2;
+}
+var USAGE3;
+var init_validate2 = __esm({
+  "src/cli/validate.ts"() {
+    "use strict";
+    init_validate();
+    init_config();
+    init_lint();
+    init_client();
+    USAGE3 = `Check a rules file for mistakes before it is merged. Nothing is written anywhere.
+
+Usage: pr-trust validate [file] [options]     (file defaults to .github/trust.yml)
+
+It parses the file exactly as the Action does and lists every error, then warns about
+settings that are valid but probably not meant: nobody can be admitted under
+on_unknown: close, repeated or redundant rules, a merged window of days instead of
+months, exempt_paths that match almost everything or nothing, colliding labels.
+
+Options:
+  --online              Also check on GitHub that each repository a rule names exists
+                        (and whether it was renamed), that each list: rule finds a Vouch
+                        list, and that merged rules' repositories are in the search index.
+                        Needs a token: GITHUB_TOKEN, GH_TOKEN, or \`gh auth login\`.
+  --repo <owner/repo>   With --online: the repository the rules are for. Resolves "self"
+                        and checks own_list and message_file on its default branch.
+  --strict              Fail on warnings too
+  --json                Print the findings as JSON
+  -h, --help            Show this help
+
+Exit status: 0 when there are no errors (or, with --strict, no warnings either),
+1 when there are, 2 when the file or GitHub could not be read.`;
+    main3().then(
+      (code) => process.exit(code),
+      (error) => {
+        console.error(`Error: ${error.message}`);
+        process.exit(2);
+      }
+    );
+  }
+});
+
 // src/cli/main.ts
-var USAGE3 = `pr-trust: contributor trust checks for pull requests
+var USAGE4 = `pr-trust: contributor trust checks for pull requests
 
 Usage:
   pr-trust check <owner/repo#number> [--config rules.yml]   Decide one PR, change nothing
   pr-trust backtest <owner/repo>... [--config rules.yml]    Replay a year of PRs against rules
+  pr-trust validate [file] [--online --repo owner/repo]     Find mistakes in a rules file
 
-Run either command with --help for its options.
+Run each command with --help for its options.
 Docs: https://maxbenschop.github.io/pr-trust/`;
 var command = process.argv[2];
 process.argv.splice(2, 1);
 if (command === "check") await Promise.resolve().then(() => (init_check2(), check_exports));
 else if (command === "backtest") await Promise.resolve().then(() => (init_backtest(), backtest_exports));
+else if (command === "validate") await Promise.resolve().then(() => (init_validate2(), validate_exports));
 else {
-  console.log(USAGE3);
+  console.log(USAGE4);
   process.exit(command === void 0 || command === "--help" || command === "-h" ? 0 : 1);
 }

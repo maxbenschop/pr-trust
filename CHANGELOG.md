@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- `pr-trust validate [file]` (also `pnpm validate`) finds mistakes in a rules file before it
+  is merged: every error with its line and a "did you mean" hint for near misses, plus
+  warnings for valid settings that are probably not meant (nobody can be admitted under
+  `on_unknown: close`, repeated or redundant rules, a `merged` window of days, `exempt_paths`
+  that match nearly everything or nothing, colliding labels). `--online --repo owner/repo`
+  also checks that named repositories exist and are not renamed, that `list:` rules find a
+  Vouch list, and that `own_list` and `message_file` exist. `--strict`, `--json`.
+- `validate` input: check the pull request's version of the rules file on `pull_request`
+  (read-only token, read as data, nothing checked out) and fail the job on errors. See
+  `examples/validate-rules.yml`. It refuses to run on `pull_request_target`.
+- Clearer rule errors: "did you mean" for misspelt keys and values (`on-unknown`, `admits`,
+  `minimum`, `24m`), and specific hints for a bare `- owner/repo` rule, a GitHub URL in
+  `list:`, and `merged:` keys indented at the wrong level.
+
 - `/vouch` comment command (opt-in, with an `issue_comment` trigger and `contents: write`): a
   maintainer comments `/vouch` on a pull request, or `/vouch @login` anywhere, to add the
   account to the project's own Vouch list, and the pull request is checked again. New

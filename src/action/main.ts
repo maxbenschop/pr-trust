@@ -1,15 +1,19 @@
 /**
  * GitHub Action entry point. Reads the event and inputs from the runner's environment,
  * runs the check and reports through outputs, annotations and the job summary.
- * Inputs: github-token, config, dry-run, pr-number, as-author, fail-on-error.
+ * Inputs: github-token, config, dry-run, pr-number, as-author, fail-on-error, validate.
  * On an `issue_comment` event it handles the `/vouch` command instead (see vouch.ts), and
  * on a `push` that changed the trust list it checks waiting pull requests again (recheck.ts).
+ * With the `validate` input it only checks a rules file and changes nothing (validate.ts).
  */
 import fs from "node:fs";
-import { createClient } from "../github/client.ts";
+import { countFindings, summaryLine } from "../engine/lint.ts";
+import { createClient, type GitHubClient } from "../github/client.ts";
 import { asAuthor, pullRequestFromApi, runCheck } from "./check.ts";
+import { readFilesAt } from "./live.ts";
 import { handlePush } from "./recheck.ts";
 import { describeAction, summaryMarkdown } from "./report.ts";
+import { validateRules } from "./validate.ts";
 import { handleComment } from "./vouch.ts";
 
 function input(name: string): string {
@@ -21,8 +25,14 @@ function escapeData(text: string): string {
   return text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 }
 
-function command(name: "warning" | "error" | "notice", message: string): void {
-  process.stdout.write(`::${name}::${escapeData(message)}\n`);
+/** Escapes a workflow command property, such as file=. */
+function escapeProperty(text: string): string {
+  return escapeData(text).replace(/:/g, "%3A").replace(/,/g, "%2C");
+}
+
+function command(name: "warning" | "error" | "notice", message: string, where?: { file: string; line: number | null }): void {
+  const properties = where ? ` file=${escapeProperty(where.file)}${where.line ? `,line=${where.line}` : ""}` : "";
+  process.stdout.write(`::${name}${properties}::${escapeData(message)}\n`);
 }
 
 function setOutput(name: string, value: string): void {
@@ -43,6 +53,9 @@ async function main(): Promise<number> {
   const gh = createClient({ token, userAgent: "pr-trust-action", log: (m) => console.log(m) });
   const configPath = input("config") || ".github/trust.yml";
   const dryRun = input("dry-run") === "true";
+
+  const validate = input("validate");
+  if (validate) return validateFile(gh, repo, validate);
 
   if (process.env.GITHUB_EVENT_NAME === "issue_comment") {
     const result = await handleComment(gh, { repo, event, configPath, dryRun, log: (m) => console.log(m) });
@@ -147,6 +160,58 @@ async function main(): Promise<number> {
     return input("fail-on-error") === "true" ? 1 : 0;
   }
   return 0;
+}
+
+/**
+ * Checks the rules file as of the commit the workflow runs on (for `pull_request`, the pull
+ * request merged into its base), read through the API as data: nothing is checked out and
+ * nothing from the pull request runs. Fails the job on errors; warnings only annotate.
+ */
+async function validateFile(gh: GitHubClient, repo: string, file: string): Promise<number> {
+  const event = process.env.GITHUB_EVENT_NAME;
+  if (event === "pull_request_target") {
+    command(
+      "error",
+      "validate reads a file from the pull request, so run it on the pull_request event with a read-only token, " +
+        "not on pull_request_target. See examples/validate-rules.yml.",
+    );
+    return 1;
+  }
+  const sha = process.env.GITHUB_SHA;
+  if (!sha) {
+    command("error", "GITHUB_SHA is not set, so there is no commit to read the rules file from.");
+    return 1;
+  }
+  const refName = event === "pull_request" ? "in this pull request" : `at commit ${sha.slice(0, 7)}`;
+  let text: string | null | undefined;
+  let result;
+  try {
+    [text] = await readFilesAt(gh, repo, sha, [file]);
+    if (text == null) {
+      command("notice", `There is no ${file} ${refName}, so the Action would use its built-in defaults.`);
+      setOutput("status", "valid");
+      return 0;
+    }
+    result = await validateRules(text, { gh, repo, ref: sha, refName });
+  } catch (error) {
+    command("error", `Could not validate ${file}: ${(error as Error).message}`);
+    return 1;
+  }
+  // Messages quote the file, which the pull request controls, so they only go out escaped
+  // in workflow commands: printed as is, a line starting with "::" would be a command.
+  for (const finding of result.findings) command(finding.level, finding.message, { file, line: finding.line });
+  for (const note of result.notes) console.log(`note: ${note}`);
+  const summary = summaryLine(file, result.findings, `checked ${refName}`);
+  console.log(summary);
+  const { errors } = countFindings(result.findings);
+  setOutput("status", errors > 0 ? "invalid" : "valid");
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    const lines = [`### Rules file: ${errors > 0 ? "invalid" : "valid"}`, "", summary, ""];
+    for (const f of result.findings) lines.push(`- **${f.level}**${f.line ? ` (line ${f.line})` : ""}: ${f.message.replace(/\n[\s\S]*/, "")}`);
+    if (result.findings.length > 0) lines.push("");
+    fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${lines.join("\n")}\n`);
+  }
+  return errors > 0 ? 1 : 0;
 }
 
 main().then(

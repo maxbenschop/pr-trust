@@ -13,9 +13,19 @@ export async function readDefaultBranchFiles(
   repo: string,
   paths: string[],
 ): Promise<(string | null)[]> {
+  return readFilesAt(gh, repo, "HEAD", paths);
+}
+
+/** Reads files as of `ref` (a commit sha, or "HEAD" for the default branch); null where missing. */
+export async function readFilesAt(
+  gh: GraphQLClient,
+  repo: string,
+  ref: string,
+  paths: string[],
+): Promise<(string | null)[]> {
   const [owner, name] = repo.split("/") as [string, string];
   const fields = paths
-    .map((p, i) => `f${i}: object(expression: ${JSON.stringify(`HEAD:${p}`)}) { ... on Blob { text } }`)
+    .map((p, i) => `f${i}: object(expression: ${JSON.stringify(`${ref}:${p}`)}) { ... on Blob { text } }`)
     .join("\n    ");
   const result = await gh.graphql<{ repository: Record<string, { text: string | null } | null> | null }>(
     `query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    ${fields}\n  }\n}`,

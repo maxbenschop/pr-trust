@@ -49,3 +49,7 @@ jobs:
           dry-run: "true"
           fail-on-error: "true"
       - run: echo "Result was ${{ steps.trust.outputs.status }}"
+      # The pull request's version of this repository's rules, as examples/validate-rules.yml does.
+      - uses: ./
+        with:
+          validate: .github/trust.yml

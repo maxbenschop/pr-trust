@@ -30,7 +30,7 @@ on_denounced: close
 comment: unknown
 
 # Your own message, read from the default branch. Placeholders: {author}, {reason},
-# {repo}, and {next} (what happens next: closed or waiting for review).
+# {repo}, {next} (what happens next: closed or waiting for review) and {rules} (your rules as a list).
 message_file: .github/trust-message.md
 
 # Label names; set one to "" to turn it off.

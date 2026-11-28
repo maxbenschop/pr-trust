@@ -12,11 +12,12 @@ It then labels the PR, and can comment and close it. It reads
 
 ![Demo: an unknown author's pull request gets the "trust: unknown" label and a comment; a pull request from someone with merged work in rust-lang/rust gets "trust: admitted"](site/demo.gif)
 
-It comes with two command-line tools:
+It comes with three command-line tools:
 
 - **`backtest`** replays a year of a repository's real PRs against your rules and shows
   what they would have kept, stopped and cost, before you install anything.
 - **`check`** runs the Action's decision on any single PR without changing it.
+- **`validate`** finds mistakes in a rules file before it is merged.
 
 ## Quick start
 
@@ -194,6 +195,50 @@ All keys are optional. See [`examples/trust.yml`](examples/trust.yml) for a comm
 Trust goes one step only: a project you list admits the people it vouched for, not the
 people trusted by the projects it trusts.
 
+## Checking the rules file before merging
+
+A broken `.github/trust.yml` otherwise shows up only when the next pull request arrives and
+gets "trust: check failed". Check it first:
+
+```sh
+npx github:maxbenschop/pr-trust validate                       # .github/trust.yml, offline
+npx github:maxbenschop/pr-trust validate --online --repo your-org/your-repo
+```
+
+It parses the file exactly as the Action does and lists every error with its line, with a
+hint for near misses (`on-unknown`, `admits`, `24m`). It also warns about settings that are
+valid but probably not meant: nobody can be admitted under `on_unknown: close`, a repeated
+or redundant rule, a `merged` window of days, `exempt_paths` that match nearly everything
+or nothing, and labels that collide. `--online` also checks that every repository a rule
+names exists (and reports renames), that each `list:` rule finds a Vouch list where the
+Action looks, that `merged` repositories are in GitHub's search index, and that `own_list`
+and `message_file` exist in `--repo`. Exit status: 0 without errors (warnings fail only with
+`--strict`), 1 with errors, 2 if the file or GitHub could not be read. `--json` for scripts.
+
+To check pull requests that change the rules, add a second workflow
+([full example](examples/validate-rules.yml)):
+
+```yaml
+on:
+  pull_request:
+    paths: [.github/trust.yml]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: maxbenschop/pr-trust@<a release newer than v0.1.1>
+        with:
+          validate: .github/trust.yml
+```
+
+Keep it on `pull_request`, separate from the contributor check: the file comes from the pull
+request, so it should only ever be read with the read-only token a fork's pull request gets
+there, never with `pull_request_target`'s write token (the Action refuses that). The Action
+reads the file through the API and only parses it; nothing is checked out or run. Errors
+fail the job and appear as annotations on the file; warnings only annotate.
+
 ## Inputs and outputs
 
 | Input | Default | |
@@ -204,10 +249,11 @@ people trusted by the projects it trusts.
 | `pr-number` | from the event | Check another PR, for example from `workflow_dispatch` |
 | `as-author` | empty | Try your rules: check the PR as if this username had opened it as an outside contributor. Labels and comments are applied unless `dry-run` is on |
 | `fail-on-error` | `false` | Fail the job when the check fails (the PR stays open regardless) |
+| `validate` | empty | Instead of checking a PR, check this rules file as of the workflow's commit and fail on errors ([above](#checking-the-rules-file-before-merging)) |
 
 | Output | |
 |---|---|
-| `status` | `admitted`, `exempt`, `unknown`, `denounced`, `skipped` or `error` |
+| `status` | `admitted`, `exempt`, `unknown`, `denounced`, `skipped` or `error`; with `validate`, `valid` or `invalid` |
 | `admitted` | `"true"` for admitted, exempt or skipped |
 | `reason` | One line, such as `3 merged PRs in rust-lang/rust` |
 | `rule` | The rule that admitted the author |
@@ -244,16 +290,18 @@ check for anyone it admits ([full example](examples/with-vouch.yml)):
 
 ## Command-line tools
 
-Both need Node 22.18 or later and a GitHub token (`GITHUB_TOKEN`, `GH_TOKEN`, or a
-`gh auth login` session). Only read access is used. Run them without installing:
+They need Node 22.18 or later. `check`, `backtest` and `validate --online` also need a GitHub
+token (`GITHUB_TOKEN`, `GH_TOKEN`, or a `gh auth login` session); only read access is used.
+Run them without installing:
 
 ```sh
 npx github:maxbenschop/pr-trust check astral-sh/uv#23415                    # the repo's rules, or defaults
 npx github:maxbenschop/pr-trust check astral-sh/uv#23415 --config my.yml    # try your own rules
 npx github:maxbenschop/pr-trust backtest ghostty-org/ghostty --config my.yml --json run.json
+npx github:maxbenschop/pr-trust validate my.yml --online                     # find mistakes in rules
 ```
 
-From a clone, `pnpm check …` and `pnpm backtest …` do the same.
+From a clone, `pnpm check …`, `pnpm backtest …` and `pnpm validate …` do the same.
 
 ### Reading a backtest
 
@@ -324,7 +372,7 @@ pnpm lists       # refresh site/lists.json from lists/catalog.json
 | `src/github/` | API client with retries and rate-limit handling, cache, queries |
 | `src/action/` | The Action: live data, the check, planning and applying actions |
 | `src/backtest/` | History lookups, replay and the report |
-| `src/cli/` | `check` and `backtest`, and the `pr-trust` command that bundles both |
+| `src/cli/` | `check`, `backtest` and `validate`, and the `pr-trust` command that bundles them |
 | `site/` | The website (static; deployed to GitHub Pages) |
 | `lists/` | The trust list directory's catalog |
 

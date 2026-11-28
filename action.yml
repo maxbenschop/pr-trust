@@ -31,13 +31,21 @@ inputs:
   fail-on-error:
     description: Fail the job when the check itself fails. The PR is never closed on an error either way.
     default: "false"
+  validate:
+    description: >-
+      Path of a rules file to check instead of checking a pull request, such as .github/trust.yml.
+      It is read as of the commit the workflow runs on (for pull_request, the pull request's
+      version), only parsed, and the job fails if it has errors. Nothing is changed. Use it on
+      pull_request with a read-only token, never pull_request_target; see
+      examples/validate-rules.yml.
+    default: ""
 
 outputs:
   status:
     description: >-
       admitted, exempt, unknown, denounced, skipped (maintainer, bot or closed PR) or error. On a
       comment: the result of checking the PR again after /vouch, else skipped (or error if
-      /vouch failed). On a push: skipped.
+      /vouch failed). On a push: skipped. With validate: valid or invalid.
   admitted:
     description: '"true" when the author may proceed (admitted, exempt or skipped).'
   reason:
