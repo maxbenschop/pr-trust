@@ -5,13 +5,21 @@ import { formatDuration, parseDuration, type Duration } from "./duration.ts";
 export type ListRef = { repo: string; path: string | null };
 
 export type ListRule = { kind: "list"; source: ListRef };
+/** `repo` is "self", "any" (public repositories the author does not own), or owner/repo. */
 export type MergedRule = { kind: "merged"; repo: string; min: number; within: Duration };
-export type Rule = ListRule | MergedRule;
+/** The author is a public member of `org`. */
+export type OrgMemberRule = { kind: "org_member"; org: string };
+export type Rule = ListRule | MergedRule | OrgMemberRule;
 
 export type TrustConfig = {
   /** The project's own list: the only list whose denouncements count. */
   ownList: { path: string | null } | null;
   admit: Rule[];
+  /**
+   * Accounts younger than this when the PR was opened are not admitted by `admit` rules.
+   * The own list is unaffected. Null (the default) turns the floor off.
+   */
+  minAccountAge: Duration | null;
   exemptPaths: string[];
   onUnknown: "label" | "close";
   onDenounced: "label" | "close";
@@ -33,6 +41,8 @@ export const DEFAULT_LABELS: Labels = {
 };
 
 export const SELF = "self";
+/** `merged.repo: any`: merges in public repositories the author does not own. */
+export const ANY = "any";
 export const DEFAULT_WITHIN: Duration = { amount: 24, unit: "mo" };
 export const VOUCH_FILE_CANDIDATES = [".github/VOUCHED.td", "VOUCHED.td"];
 
@@ -89,6 +99,7 @@ export const CONFIG_KEYS = [
   "version",
   "own_list",
   "admit",
+  "min_account_age",
   "exempt_paths",
   "on_unknown",
   "on_denounced",
@@ -98,6 +109,8 @@ export const CONFIG_KEYS = [
 ] as const;
 
 const MERGED_KEYS = ["repo", "min", "within"];
+const RULE_KINDS = ["list", "merged", "org_member"];
+const ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
 export function validateConfig(raw: unknown): TrustConfig {
   const problems = new Problems();
@@ -119,6 +132,13 @@ export function validateConfig(raw: unknown): TrustConfig {
       const rule = parseRule(entry, i, problems);
       if (rule) admit.push(rule);
     });
+  }
+
+  let minAccountAge: Duration | null = null;
+  if (raw.min_account_age !== undefined && raw.min_account_age !== null && raw.min_account_age !== false) {
+    const parsed = typeof raw.min_account_age === "string" ? parseDuration(raw.min_account_age) : null;
+    if (parsed) minAccountAge = parsed;
+    else problems.add(["min_account_age"], `min_account_age must look like 30d, 8w, 6mo or 1y${monthsHint(raw.min_account_age)}`);
   }
 
   const exemptPaths: string[] = [];
@@ -159,7 +179,7 @@ export function validateConfig(raw: unknown): TrustConfig {
   }
 
   if (problems.length > 0) throw new ConfigError(problems.list);
-  return { ownList, admit, exemptPaths, onUnknown, onDenounced, comment, messageFile, labels };
+  return { ownList, admit, minAccountAge, exemptPaths, onUnknown, onDenounced, comment, messageFile, labels };
 }
 
 function parseChoice<T extends string>(
@@ -194,7 +214,7 @@ function parseRule(entry: unknown, index: number, problems: Problems): Rule | nu
       path,
       asList
         ? `${where} must be a rule; to trust ${asList.repo}'s Vouch list, write "- list: ${entry}"`
-        : `${where} must be a mapping such as { list: owner/repo } or { merged: {...} }`,
+        : `${where} must be a mapping such as { list: owner/repo }, { merged: {...} } or { org_member: some-org }`,
     );
     return null;
   }
@@ -204,9 +224,9 @@ function parseRule(entry: unknown, index: number, problems: Problems): Rule | nu
     problems.add(
       path,
       "merged" in entry && misplaced.length > 0
-        ? `${where} must have exactly one key ("list" or "merged"); ${misplaced.join(" and ")} belong${misplaced.length === 1 ? "s" : ""} ` +
+        ? `${where} must have exactly one key ("list", "merged" or "org_member"); ${misplaced.join(" and ")} belong${misplaced.length === 1 ? "s" : ""} ` +
             `inside it: indent ${misplaced.length === 1 ? "it" : "them"} further than merged:, or write merged: { repo: self, min: 1, within: 24mo }`
-        : `${where} must have exactly one key ("list" or "merged")`,
+        : `${where} must have exactly one key ("list", "merged" or "org_member")`,
     );
     return null;
   }
@@ -235,7 +255,9 @@ function parseRule(entry: unknown, index: number, problems: Problems): Rule | nu
       if (!MERGED_KEYS.includes(key)) problems.add([...path, "merged", key], `${where}.merged: unknown key "${key}"${didYouMean(key, MERGED_KEYS)}`);
     }
     const repo = typeof m.repo === "string" ? m.repo.trim() : "";
-    if (repo !== SELF && !isRepoName(repo)) problems.add([...path, "merged", "repo"], `${where}.merged.repo must be "self" or "owner/repo"`);
+    if (repo !== SELF && repo !== ANY && !isRepoName(repo)) {
+      problems.add([...path, "merged", "repo"], `${where}.merged.repo must be "self", "any" or "owner/repo"`);
+    }
     const min = m.min ?? 1;
     if (typeof min !== "number" || !Number.isInteger(min) || min < 1) {
       problems.add([...path, "merged", "min"], `${where}.merged.min must be a whole number of at least 1`);
@@ -244,20 +266,35 @@ function parseRule(entry: unknown, index: number, problems: Problems): Rule | nu
     if (m.within !== undefined) {
       const parsed = typeof m.within === "string" ? parseDuration(m.within) : null;
       if (parsed) within = parsed;
-      else {
-        // "24m" is the usual slip: months are "mo", since "m" could be read as minutes.
-        const months = typeof m.within === "string" ? /^\s*(\d+)\s*m(?:onths?)?\s*$/i.exec(m.within) : null;
-        const hint = months ? ` (did you mean "${months[1]}mo"?)` : "";
-        problems.add([...path, "merged", "within"], `${where}.merged.within must look like 90d, 12w, 24mo or 2y${hint}`);
-      }
+      else problems.add([...path, "merged", "within"], `${where}.merged.within must look like 90d, 12w, 24mo or 2y${monthsHint(m.within)}`);
     }
     if (problems.length > before) return null;
     return { kind: "merged", repo, min: min as number, within };
   }
 
-  const hint = didYouMean(keys[0]!, ["list", "merged"]) || ` (expected "list" or "merged")`;
+  if ("org_member" in entry) {
+    const value = entry.org_member;
+    const org = typeof value === "string" ? value.trim() : "";
+    if (!ORG.test(org)) {
+      const hint = typeof value === "string" ? /^(?:@|https?:\/\/github\.com\/)([A-Za-z0-9-]+)\/?$/.exec(value.trim()) : null;
+      problems.add(
+        [...path, "org_member"],
+        `${where}.org_member must be an organisation's login, such as rust-lang${hint ? ` (did you mean "${hint[1]}"?)` : ""}`,
+      );
+      return null;
+    }
+    return { kind: "org_member", org };
+  }
+
+  const hint = didYouMean(keys[0]!, RULE_KINDS) || ` (expected "list", "merged" or "org_member")`;
   problems.add(path, `${where} has unknown rule "${keys[0]}"${hint}`);
   return null;
+}
+
+/** "24m" is the usual slip: months are "mo", since "m" could be read as minutes. */
+function monthsHint(value: unknown): string {
+  const months = typeof value === "string" ? /^\s*(\d+)\s*m(?:onths?)?\s*$/i.exec(value) : null;
+  return months ? ` (did you mean "${months[1]}mo"?)` : "";
 }
 
 /**
@@ -311,7 +348,8 @@ export function describeRule(rule: Rule): string {
   if (rule.kind === "list") {
     return `vouched in ${rule.source.repo}${rule.source.path ? `:${rule.source.path}` : ""}`;
   }
-  const where = rule.repo === SELF ? "this repo" : rule.repo;
+  if (rule.kind === "org_member") return `public member of ${rule.org}`;
+  const where = rule.repo === SELF ? "this repo" : rule.repo === ANY ? "others' public repos" : rule.repo;
   return `≥${rule.min} merged PR${rule.min === 1 ? "" : "s"} in ${where} within ${formatDuration(rule.within)}`;
 }
 

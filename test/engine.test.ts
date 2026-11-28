@@ -99,6 +99,7 @@ on_unknown: close
     expect(parseConfig("")).toEqual({
       ownList: { path: null },
       admit: [],
+      minAccountAge: null,
       exemptPaths: [],
       onUnknown: "label",
       onDenounced: "close",
@@ -107,6 +108,33 @@ on_unknown: close
       labels: DEFAULT_LABELS,
     });
     expect(parseConfig("own_list: none").ownList).toBeNull();
+  });
+
+  it("parses the rules about the author, and the account age floor", () => {
+    const config = parseConfig("min_account_age: 30d\nadmit:\n  - merged: { repo: any, min: 2, within: 24mo }\n  - org_member: ' rust-lang '\n");
+    expect(config.minAccountAge).toEqual({ amount: 30, unit: "d" });
+    expect(config.admit).toEqual([
+      { kind: "merged", repo: "any", min: 2, within: { amount: 24, unit: "mo" } },
+      { kind: "org_member", org: "rust-lang" },
+    ]);
+    expect(config.admit.map(describeRule)).toEqual(["≥2 merged PRs in others' public repos within 24 months", "public member of rust-lang"]);
+    expect(parseConfig("min_account_age: null").minAccountAge).toBeNull();
+    const problems = (text: string) => {
+      try {
+        parseConfig(text);
+        return [];
+      } catch (error) {
+        return (error as ConfigError).problems;
+      }
+    };
+    expect(problems("min_account_age: 30\n")).toEqual(["min_account_age must look like 30d, 8w, 6mo or 1y"]);
+    expect(problems("min_account_age: 3m\n")).toEqual(['min_account_age must look like 30d, 8w, 6mo or 1y (did you mean "3mo"?)']);
+    expect(problems("admit:\n  - org_member: rust-lang/rust\n  - org_member: https://github.com/tokio-rs\n  - org_member: { org: x }\n  - org_membr: x\n")).toEqual([
+      "admit[0].org_member must be an organisation's login, such as rust-lang",
+      'admit[1].org_member must be an organisation\'s login, such as rust-lang (did you mean "tokio-rs"?)',
+      "admit[2].org_member must be an organisation's login, such as rust-lang",
+      'admit[3] has unknown rule "org_membr" (did you mean "org_member"?)',
+    ]);
   });
 
   it("reports every problem at once", () => {
@@ -123,10 +151,10 @@ on_unknown: delete
       expect(error).toBeInstanceOf(ConfigError);
       expect((error as ConfigError).problems).toEqual([
         'unknown key "colour"',
-        'admit[0].merged.repo must be "self" or "owner/repo"',
+        'admit[0].merged.repo must be "self", "any" or "owner/repo"',
         "admit[0].merged.min must be a whole number of at least 1",
         "admit[0].merged.within must look like 90d, 12w, 24mo or 2y",
-        'admit[1] has unknown rule "vouched" (expected "list" or "merged")',
+        'admit[1] has unknown rule "vouched" (expected "list", "merged" or "org_member")',
         'on_unknown must be "label" or "close"',
       ]);
     }
@@ -158,6 +186,9 @@ describe("evaluate", () => {
     ownList: () => "unknown",
     listVouches: () => false,
     mergedCount: () => 0,
+    mergedElsewhereCount: () => 0,
+    isPublicOrgMember: () => false,
+    accountCreatedAt: () => null,
     ...overrides,
   });
   const config = parseConfig(`
@@ -192,6 +223,62 @@ exempt_paths: ["docs/**"]
     expect(d).toMatchObject({ status: "admitted", reason: "2 merged PRs in me/repo" });
     expect(calls).toEqual([{ repo: "me/repo", login: "alice", from: "2025-06-01T00:00:00.000Z", to: "2026-06-01T00:00:00.000Z", min: 2 }]);
     expect((await evaluate(input, sources({ mergedCount: () => 1 }))).status).toBe("unknown");
+  });
+
+  it("counts merges outside the author's own repositories and organisation membership", async () => {
+    const rules = parseConfig("own_list: none\nadmit:\n  - merged: { repo: any, min: 3, within: 6mo }\n  - org_member: Rust-Lang\n");
+    const calls: unknown[] = [];
+    const d = await evaluate(
+      { ...input, config: rules },
+      sources({
+        mergedElsewhereCount: (login, from, to, min) => {
+          calls.push({ login, from: from.toISOString(), to: to.toISOString(), min });
+          return 3;
+        },
+      }),
+    );
+    expect(d).toMatchObject({ status: "admitted", rule: "≥3 merged PRs in others' public repos within 6 months", reason: "3 merged PRs in others' public repositories" });
+    expect(calls).toEqual([{ login: "alice", from: "2025-12-01T00:00:00.000Z", to: "2026-06-01T00:00:00.000Z", min: 3 }]);
+    const orgs: string[] = [];
+    const member = await evaluate(
+      { ...input, config: rules },
+      sources({ mergedElsewhereCount: () => 2, isPublicOrgMember: (org, login) => (orgs.push(`${org}/${login}`), true) }),
+    );
+    expect(member).toMatchObject({ status: "admitted", rule: "public member of Rust-Lang", reason: "public member of Rust-Lang" });
+    expect(orgs).toEqual(["Rust-Lang/alice"]);
+  });
+
+  describe("min_account_age", () => {
+    const floor = parseConfig("min_account_age: 30d\nadmit:\n  - list: other/project\n  - org_member: org\nexempt_paths: [\"docs/**\"]\n");
+    const daysBefore = (days: number) => new Date(at.getTime() - days * 86_400_000);
+
+    it("holds back accounts younger than the floor at the time of the PR, naming the rule", async () => {
+      let lookups = 0;
+      const young = sources({ listVouches: () => true, isPublicOrgMember: () => true, accountCreatedAt: () => (lookups++, daysBefore(29)) });
+      const d = await evaluate({ ...input, config: floor }, young);
+      expect(d).toEqual({
+        status: "unknown",
+        reason: "the account is 29 days old, and rules other than this project's own list need an account at least 30 days old",
+        heldBack: { rule: "vouched in other/project", accountCreatedAt: daysBefore(29).toISOString() },
+      });
+      expect(lookups).toBe(1);
+      // Exactly 30 days old passes.
+      expect((await evaluate({ ...input, config: floor }, sources({ listVouches: () => true, accountCreatedAt: () => daysBefore(30) }))).status).toBe("admitted");
+    });
+
+    it("never applies to the own list or denouncements, and leaves exempt paths alone", async () => {
+      const young = { accountCreatedAt: () => daysBefore(1), listVouches: () => true };
+      expect(await evaluate({ ...input, config: floor }, sources({ ...young, ownList: () => "vouched" }))).toMatchObject({ status: "admitted", rule: "own list" });
+      expect((await evaluate({ ...input, config: floor }, sources({ ...young, ownList: () => "denounced" }))).status).toBe("denounced");
+      expect((await evaluate({ ...input, config: floor, changedPaths: ["docs/a.md"] }, sources(young))).status).toBe("exempt");
+    });
+
+    it("treats an unknown creation date as too new, and is off by default", async () => {
+      const d = await evaluate({ ...input, config: floor }, sources({ listVouches: () => true, accountCreatedAt: () => null }));
+      expect(d).toMatchObject({ status: "unknown", heldBack: { accountCreatedAt: null } });
+      const noFloor = sources({ listVouches: () => true, accountCreatedAt: () => { throw new Error("must not be asked"); } });
+      expect((await evaluate(input, noFloor)).status).toBe("admitted");
+    });
   });
 
   it("exempts PRs that only touch exempt paths, and only when the file list is known", async () => {

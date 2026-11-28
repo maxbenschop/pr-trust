@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Three ways to recognise a newcomer who is not new to open source, each checked live by the
+  Action and replayed by the backtest as of each PR's open time, checked by `validate`, and
+  listed in the comment's "You pass this check when you" list:
+  - `merged: { repo: any, min: 3, within: 24mo }`: PRs merged into public repositories the
+    author does not own, merged by someone other than the author. One search per check.
+  - `org_member: some-org`: a public member of that organisation. One request per check. The
+    backtest uses today's membership (GitHub keeps no history) and says so in its notes.
+  - `min_account_age: 30d` (off by default): `admit` rules do not admit accounts younger than
+    this; the own list is unaffected. One request, only when a rule would admit. The backtest
+    replays it exactly and counts the PRs it holds back ("account too new").
+
 - `pr-trust validate [file]` (also `pnpm validate`) finds mistakes in a rules file before it
   is merged: every error with its line and a "did you mean" hint for near misses, plus
   warnings for valid settings that are probably not meant (nobody can be admitted under

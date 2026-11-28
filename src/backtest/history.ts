@@ -61,16 +61,40 @@ export type HistoricalData = {
   own: ListHistory | null;
   lists: Map<string, ListHistory | null>;
   merges: Map<string, MergeIndex>;
+  /** Each author's merges by others into public repositories they do not own (`merged: { repo: any }`). */
+  elsewhere?: MergeIndex;
+  /**
+   * Public members per organisation (lowercase), among the authors checked. GitHub has no
+   * membership history, so this is today's membership, used for every PR.
+   */
+  orgMembers?: Map<string, Set<string>>;
+  /** Account creation time per login (lowercase). Exact for any point in time. */
+  accountCreated?: Map<string, string>;
 };
 
 export function historicalSources(data: HistoricalData): TrustSources {
+  const missing = (what: string) => new Error(`No ${what} loaded`);
   return {
     ownList: (login, at) => data.own?.status(login, at) ?? "unknown",
     listVouches: (source: ListRef, login, at) => data.lists.get(listKey(source))?.status(login, at) === "vouched",
     mergedCount: (repo, login, from, to) => {
       const index = data.merges.get(repo.toLowerCase());
-      if (!index) throw new Error(`No merge history loaded for ${repo}`);
+      if (!index) throw missing(`merge history for ${repo}`);
       return index.count(login, from, to);
+    },
+    mergedElsewhereCount: (login, from, to) => {
+      if (!data.elsewhere) throw missing("merge history outside the authors' own repositories");
+      return data.elsewhere.count(login, from, to);
+    },
+    isPublicOrgMember: (org, login) => {
+      const members = data.orgMembers?.get(org.toLowerCase());
+      if (!members) throw missing(`membership of ${org}`);
+      return members.has(normalizeLogin(login));
+    },
+    accountCreatedAt: (login) => {
+      if (!data.accountCreated) throw missing("account creation dates");
+      const created = data.accountCreated.get(normalizeLogin(login));
+      return created ? new Date(created) : null;
     },
   };
 }

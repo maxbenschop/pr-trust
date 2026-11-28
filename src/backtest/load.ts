@@ -1,14 +1,19 @@
-import { listKey, SELF, VOUCH_FILE_CANDIDATES, type ListRef, type TrustConfig } from "../engine/config.ts";
+import { ANY, listKey, SELF, VOUCH_FILE_CANDIDATES, type ListRef, type TrustConfig } from "../engine/config.ts";
 import { subtractDuration } from "../engine/duration.ts";
-import type { GraphQLClient } from "../github/client.ts";
+import { normalizeLogin } from "../engine/vouchfile.ts";
+import type { GitHubClient, GraphQLClient } from "../github/client.ts";
 import {
+  fetchAccountCreation,
   fetchFileVersions,
   fetchMerged,
+  fetchMergedElsewhere,
   fetchPullRequests,
+  type MergedRow,
   type Progress,
   type PullRequestRow,
 } from "../github/queries.ts";
 import { ListHistory, MergeIndex, type HistoricalData } from "./history.ts";
+import { groupOf } from "./replay.ts";
 
 export type BacktestData = HistoricalData & {
   prs: PullRequestRow[];
@@ -18,7 +23,7 @@ export type BacktestData = HistoricalData & {
 };
 
 export async function loadBacktestData(
-  gh: GraphQLClient,
+  gh: GitHubClient,
   input: { repo: string; config: TrustConfig; from: Date; to: Date; log?: Progress },
 ): Promise<BacktestData> {
   const { repo, config, from, to } = input;
@@ -79,7 +84,68 @@ export async function loadBacktestData(
     }
   }
 
-  return { prs, maintainers, own, lists, merges, notes };
+  // The rules below are about the author rather than a repository, so they are loaded per
+  // external author: only their PRs are ever judged.
+  const authors = [...new Set(prs.filter((pr) => groupOf(pr, maintainers) === "external").map((pr) => normalizeLogin(pr.author!)))];
+  const extra = await loadAuthorFacts(gh, { config, authors, from, to, log, notes });
+  return { prs, maintainers, own, lists, merges, ...extra, notes };
+}
+
+export async function loadAuthorFacts(
+  gh: GitHubClient,
+  input: { config: TrustConfig; authors: string[]; from: Date; to: Date; log: Progress; notes: string[] },
+): Promise<Pick<HistoricalData, "elsewhere" | "orgMembers" | "accountCreated">> {
+  const { config, authors, from, to, log, notes } = input;
+  const result: Pick<HistoricalData, "elsewhere" | "orgMembers" | "accountCreated"> = {};
+
+  const anyStarts = config.admit.flatMap((rule) =>
+    rule.kind === "merged" && rule.repo === ANY ? [subtractDuration(from, rule.within).getTime()] : [],
+  );
+  if (anyStarts.length > 0) {
+    const start = new Date(Math.min(...anyStarts));
+    log(`searching merged PRs outside their own repositories for ${authors.length} authors since ${start.toISOString().slice(0, 10)}`);
+    const rows: MergedRow[] = [];
+    let failed = 0;
+    for (const [i, login] of authors.entries()) {
+      if ((i + 1) % 25 === 0) log(`  ${i + 1} of ${authors.length} authors`);
+      try {
+        for (const mergedAt of await fetchMergedElsewhere(gh, login, start, to)) rows.push({ author: login, mergedAt, mergedBy: null });
+      } catch (error) {
+        failed++;
+        log(`  ${login}: ${(error as Error).message}`);
+      }
+    }
+    result.elsewhere = new MergeIndex(rows);
+    if (failed > 0) notes.push(`Merges elsewhere could not be searched for ${failed} author(s); for them "any" rules never matched.`);
+    notes.push(
+      'merged: { repo: any } reads GitHub search today: merges in repositories since deleted or made private are ' +
+        "missed, and repository owners are today's.",
+    );
+  }
+
+  const orgs = [...new Set(config.admit.flatMap((rule) => (rule.kind === "org_member" ? [rule.org.toLowerCase()] : [])))];
+  if (orgs.length > 0) {
+    result.orgMembers = new Map();
+    for (const org of orgs) {
+      log(`checking public membership of ${org} for ${authors.length} authors`);
+      const members = new Set<string>();
+      for (const login of authors) {
+        const { status } = await gh.rest("GET", `/orgs/${encodeURIComponent(org)}/public_members/${encodeURIComponent(login)}`, undefined, [404]);
+        if (status === 204) members.add(login);
+      }
+      result.orgMembers.set(org, members);
+    }
+    notes.push(
+      `org_member uses today's public membership of ${orgs.join(", ")} for every PR: GitHub keeps no membership ` +
+        "history, so someone who joined after opening a PR counts as a member when they opened it.",
+    );
+  }
+
+  if (config.minAccountAge) {
+    log(`reading account creation dates for ${authors.length} authors`);
+    result.accountCreated = await fetchAccountCreation(gh, authors);
+  }
+  return result;
 }
 
 async function loadList(gh: GraphQLClient, ref: ListRef, log: Progress): Promise<ListHistory | null> {

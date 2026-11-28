@@ -1,6 +1,7 @@
 import picomatch from "picomatch";
 import { isMap, isNode, isScalar, isSeq, LineCounter, parseDocument } from "yaml";
 import {
+  ANY,
   ConfigError,
   describeRule,
   listKey,
@@ -72,7 +73,12 @@ export function configWarnings(config: TrustConfig): Problem[] {
     for (let i = 0; i < config.admit.length; i++) {
       if (i === j) continue;
       const other = config.admit[i]!;
-      if (rule.kind === "list" && other.kind === "list") {
+      if (rule.kind === "org_member" && other.kind === "org_member") {
+        if (i < j && rule.org.toLowerCase() === other.org.toLowerCase()) {
+          warn(["admit", j], `admit[${j}] repeats admit[${i}] (${describeRule(rule)}); remove one of them`);
+          return;
+        }
+      } else if (rule.kind === "list" && other.kind === "list") {
         if (i < j && listKey(rule.source) === listKey(other.source)) {
           warn(["admit", j], `admit[${j}] repeats admit[${i}] (${describeRule(rule)}); remove one of them`);
           return;
@@ -106,6 +112,24 @@ export function configWarnings(config: TrustConfig): Problem[] {
       );
     }
   });
+
+  if (config.minAccountAge && config.admit.length === 0) {
+    warn(
+      ["min_account_age"],
+      "min_account_age has no effect without admit rules: it only stops admit rules from admitting new " +
+        "accounts, and never applies to this project's own list",
+    );
+  }
+  if (!config.minAccountAge) {
+    const i = config.admit.findIndex((rule) => rule.kind === "merged" && rule.repo === ANY);
+    if (i !== -1) {
+      warn(
+        ["admit", i, "merged", "repo"],
+        `admit[${i}] counts merges anywhere on GitHub, which a new account can collect quickly in small ` +
+          `projects; add min_account_age (such as min_account_age: 30d) so such accounts are not admitted`,
+      );
+    }
+  }
 
   config.exemptPaths.forEach((pattern, i) => {
     if (/^\.?\//.test(pattern)) {

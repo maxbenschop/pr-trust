@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createClient, RetriesExhaustedError, type GraphQLClient } from "../src/github/client.ts";
-import { countAuthorMerges, fetchPullRequests, searchAll } from "../src/github/queries.ts";
+import { countAuthorMerges, countMergedElsewhere, fetchAccountCreation, fetchPullRequests, searchAll } from "../src/github/queries.ts";
 
 describe("searchAll", () => {
   it("splits ranges that exceed the 1000-result cap and pages through the rest", async () => {
@@ -205,5 +205,79 @@ describe("createClient", () => {
     await gh.graphql("{ n }");
     expect(calls).toBe(1);
     expect(gh.stats.cached).toBe(1);
+  });
+});
+
+describe("countMergedElsewhere", () => {
+  const from = new Date("2026-01-01T00:00:00Z");
+  const to = new Date("2026-07-01T00:00:00Z");
+  const merge = (mergedAt: string, mergedBy: string | null, owner: string) => ({
+    mergedAt,
+    mergedBy: mergedBy ? { login: mergedBy } : null,
+    repository: { owner: { login: owner } },
+  });
+  const fake = (nodes: unknown[]) => {
+    const queries: string[] = [];
+    const gh: GraphQLClient = {
+      stats: { requests: 0, cached: 0 },
+      async graphql<T>(_query: string, variables: Record<string, unknown> = {}) {
+        queries.push(variables.q as string);
+        const offset = Number(variables.after ?? 0);
+        const page = nodes.slice(offset, offset + 100);
+        return { search: { issueCount: nodes.length, pageInfo: { hasNextPage: offset + 100 < nodes.length, endCursor: String(offset + 100) }, nodes: page } } as T;
+      },
+    };
+    return { gh, queries };
+  };
+
+  it("searches once, leaving out the author's own repositories and their own merges", async () => {
+    const { gh, queries } = fake([
+      merge("2026-03-01T00:00:00Z", "Alice", "alices-org"),
+      merge("2026-03-02T00:00:00Z", "bob", "ALICE"),
+      merge("2026-03-03T00:00:00Z", "bob", "big"),
+      merge("2026-07-01T00:00:00Z", "bob", "big"), // the window's end is not in it
+      merge("2026-03-04T00:00:00Z", null, "lib"),
+    ]);
+    expect(await countMergedElsewhere(gh, { login: "alice", from, to, min: 5, maxPages: 3 })).toEqual({ count: 2, complete: true, found: 5 });
+    expect(queries).toEqual(["is:pr is:merged is:public author:alice -user:alice merged:2026-01-01T00:00:00Z..2026-07-01T00:00:00Z"]);
+  });
+
+  it("stops at min, and reports when the page cap leaves the answer open", async () => {
+    const many = Array.from({ length: 250 }, () => merge("2026-03-03T00:00:00Z", "bob", "big"));
+    const early = fake(many);
+    expect(await countMergedElsewhere(early.gh, { login: "alice", from, to, min: 2, maxPages: 3 })).toEqual({ count: 2, complete: true, found: 250 });
+    expect(early.queries).toHaveLength(1);
+    const own = fake(Array.from({ length: 250 }, () => merge("2026-03-03T00:00:00Z", "alice", "alices-org")));
+    expect(await countMergedElsewhere(own.gh, { login: "alice", from, to, min: 1, maxPages: 2 })).toEqual({ count: 0, complete: false, found: 250 });
+    // 250 results can never make 300: one page is enough to know.
+    const short = fake(many);
+    expect(await countMergedElsewhere(short.gh, { login: "alice", from, to, min: 300, maxPages: 3 })).toEqual({ count: 100, complete: true, found: 250 });
+    expect(short.queries).toHaveLength(1);
+  });
+});
+
+describe("fetchAccountCreation", () => {
+  it("reads 50 logins per request and skips ones that are not users", async () => {
+    const queries: string[] = [];
+    const gh: GraphQLClient = {
+      stats: { requests: 0, cached: 0 },
+      async graphql<T>(query: string) {
+        const logins = [...query.matchAll(/(u\d+): user\(login: "([^"]+)"\)/g)];
+        queries.push(logins.map((l) => l[2]).join(","));
+        if (logins.some(([, , login]) => login === "an-org")) {
+          throw new Error("GitHub GraphQL error: Could not resolve to a User with the login of 'an-org'.");
+        }
+        return Object.fromEntries(logins.map(([, alias, login]) => [alias, { createdAt: `2020-01-01T00:00:00Z#${login}` }])) as T;
+      },
+    };
+    const logins = Array.from({ length: 51 }, (_, i) => `user${i}`);
+    const created = await fetchAccountCreation(gh, logins);
+    expect(created.size).toBe(51);
+    expect(queries).toHaveLength(2);
+
+    queries.length = 0;
+    const mixed = await fetchAccountCreation(gh, ["Alice", "an-org"]);
+    expect([...mixed.keys()]).toEqual(["alice"]);
+    expect(queries).toEqual(["Alice,an-org", "Alice", "an-org"]);
   });
 });

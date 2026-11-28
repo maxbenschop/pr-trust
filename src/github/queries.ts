@@ -369,6 +369,126 @@ export async function countAuthorMerges(
 }
 
 /**
+ * The search for `login`'s PRs merged in [from, to] into public repositories `login` does not
+ * own. `-user:` leaves out repositories under the author's own account; organisations they
+ * control are still searched, which is why callers also drop PRs the author merged themselves.
+ */
+export function mergedElsewhereQuery(login: string, from: Date, to: Date): string {
+  return `is:pr is:merged is:public author:${login} -user:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`;
+}
+
+/** A PR from that search, as needed to judge whether it counts. */
+export type ElsewhereMerge = { mergedAt: string; mergedBy: string | null; owner: string };
+
+export const ELSEWHERE_FRAGMENT = "... on PullRequest { mergedAt mergedBy { login } repository { owner { login } } }";
+
+type RawElsewhere = { mergedAt: string | null; mergedBy: { login: string } | null; repository: { owner: { login: string } } | null };
+
+export function toElsewhereMerge(node: RawElsewhere): ElsewhereMerge | null {
+  if (!node.mergedAt || !node.repository) return null;
+  return { mergedAt: node.mergedAt, mergedBy: node.mergedBy?.login ?? null, owner: node.repository.owner.login };
+}
+
+/**
+ * Whether a merge outside the author's own repositories counts: someone else merged it, into
+ * a repository someone else owns. A merger that no longer exists (null) still counts.
+ */
+export function countsAsElsewhere(merge: ElsewhereMerge, login: string): boolean {
+  const me = login.toLowerCase();
+  return merge.owner.toLowerCase() !== me && merge.mergedBy?.toLowerCase() !== me;
+}
+
+/**
+ * Counts `login`'s PRs merged in [from, to) into others' public repositories and merged by
+ * someone else. One search request per 100 results; stops at `min`, once the results left
+ * cannot reach it, or after `maxPages`. `found` is how many results search reported.
+ */
+export async function countMergedElsewhere(
+  gh: GraphQLClient,
+  options: { login: string; from: Date; to: Date; min: number; maxPages: number },
+): Promise<AuthorMergeCount & { found: number }> {
+  const query = `query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes { ${ELSEWHERE_FRAGMENT} }
+  }
+}`;
+  const q = mergedElsewhereQuery(options.login, options.from, options.to);
+  const toIso = options.to.toISOString();
+  let count = 0;
+  let read = 0;
+  let found = 0;
+  let after: string | null = null;
+  for (let page = 1; page <= options.maxPages; page++) {
+    const result: SearchResult<RawElsewhere> = await gh.graphql<SearchResult<RawElsewhere>>(query, { q, after });
+    const { issueCount, pageInfo, nodes } = result.search;
+    found = issueCount;
+    for (const node of nodes) {
+      read++;
+      const merge = node ? toElsewhereMerge(node) : null;
+      // Search ranges include their end; the window does not.
+      if (!merge || merge.mergedAt >= toIso || !countsAsElsewhere(merge, options.login)) continue;
+      if (++count >= options.min) return { count, complete: true, found };
+    }
+    const unread = Math.max(0, issueCount - read);
+    if (count + unread < options.min || !pageInfo.hasNextPage || !pageInfo.endCursor) return { count, complete: true, found };
+    after = pageInfo.endCursor;
+  }
+  return { count, complete: false, found };
+}
+
+/** Every one of `login`'s merges that `countsAsElsewhere`, in [from, to], for the backtest. */
+export async function fetchMergedElsewhere(
+  gh: GraphQLClient,
+  login: string,
+  from: Date,
+  to: Date,
+  onProgress?: Progress,
+): Promise<string[]> {
+  const raw = await searchAll<RawElsewhere>(gh, {
+    base: `is:pr is:merged is:public author:${login} -user:${login}`,
+    field: "merged",
+    from,
+    to,
+    fragment: ELSEWHERE_FRAGMENT,
+    pageSize: 100,
+    onProgress,
+  });
+  return raw
+    .map(toElsewhereMerge)
+    .filter((m): m is ElsewhereMerge => m !== null && countsAsElsewhere(m, login))
+    .map((m) => m.mergedAt);
+}
+
+/** Account creation times for `logins`, 50 per request; logins that are not users are left out. */
+export async function fetchAccountCreation(gh: GraphQLClient, logins: string[]): Promise<Map<string, string>> {
+  const created = new Map<string, string>();
+  const BATCH = 50;
+  for (let i = 0; i < logins.length; i += BATCH) {
+    const batch = logins.slice(i, i + BATCH);
+    const fields = batch.map((login, j) => `u${j}: user(login: ${JSON.stringify(login)}) { createdAt }`).join("\n  ");
+    let result: Record<string, { createdAt: string } | null>;
+    try {
+      result = await gh.graphql<Record<string, { createdAt: string } | null>>(`query {\n  ${fields}\n}`);
+    } catch (error) {
+      // A login that is not a user fails the whole batch ("Could not resolve to a User");
+      // fall back to one at a time so the rest still resolve.
+      if (!/could not resolve/i.test((error as Error).message)) throw error;
+      if (batch.length > 1) {
+        for (const login of batch) for (const [k, v] of await fetchAccountCreation(gh, [login])) created.set(k, v);
+      }
+      continue;
+    }
+    batch.forEach((login, j) => {
+      const user = result[`u${j}`];
+      if (user) created.set(login.toLowerCase(), user.createdAt);
+    });
+  }
+  return created;
+}
+
+/**
  * Every version of one file on the default branch, oldest first. A version with
  * `text: null` means the file did not exist (or was deleted) at that commit.
  */

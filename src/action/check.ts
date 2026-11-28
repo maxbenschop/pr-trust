@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG_YAML, DEFAULT_LABELS, parseConfig, SELF, type Labels, type TrustConfig } from "../engine/config.ts";
+import { ANY, DEFAULT_CONFIG_YAML, DEFAULT_LABELS, parseConfig, SELF, type Labels, type TrustConfig } from "../engine/config.ts";
 import { formatDuration } from "../engine/duration.ts";
 import { evaluate, type Decision } from "../engine/rules.ts";
 import { isLogin } from "../engine/vouchfile.ts";
@@ -243,15 +243,27 @@ export function describeWaysToPass(config: TrustConfig): string {
   for (const rule of config.admit) {
     if (rule.kind === "list") {
       ways.push(`are vouched for in [${rule.source.repo}](https://github.com/${rule.source.repo})`);
+    } else if (rule.kind === "org_member") {
+      ways.push(
+        `are a public member of the [${rule.org}](https://github.com/orgs/${rule.org}/people) organisation ` +
+          `(members can make their membership public on that page)`,
+      );
     } else {
-      const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
       const count = rule.min === 1 ? "a merged pull request" : `${rule.min} merged pull requests`;
       const period = rule.within.amount === 1 ? formatDuration(rule.within).slice(2) : formatDuration(rule.within);
-      ways.push(`have ${count} in ${where} in the last ${period}`);
+      if (rule.repo === ANY) {
+        ways.push(`have ${count} in the last ${period} in public repositories you do not own, merged by someone else`);
+      } else {
+        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
+        ways.push(`have ${count} in ${where} in the last ${period}`);
+      }
     }
   }
   if (ways.length === 0) return "- are admitted by a maintainer";
-  return ways.map((way, i) => `- ${way}${i < ways.length - 1 ? ", or" : ""}`).join("\n");
+  const list = ways.map((way, i) => `- ${way}${i < ways.length - 1 ? ", or" : ""}`).join("\n");
+  if (!config.minAccountAge || config.admit.length === 0) return list;
+  const besides = config.ownList ? "Apart from a maintainer's vouch, these" : "These";
+  return `${list}\n\n${besides} only count for accounts at least ${formatDuration(config.minAccountAge)} old.`;
 }
 
 async function loadMessage(gh: GitHubClient, repo: string, config: TrustConfig, warnings: string[]): Promise<string> {

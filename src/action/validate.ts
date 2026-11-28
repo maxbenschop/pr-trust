@@ -1,4 +1,4 @@
-import { SELF, VOUCH_FILE_CANDIDATES, didYouMean, type TrustConfig } from "../engine/config.ts";
+import { ANY, SELF, VOUCH_FILE_CANDIDATES, didYouMean, type TrustConfig } from "../engine/config.ts";
 import { createLocator, lintConfig, type Finding, type Problem } from "../engine/lint.ts";
 import { parseVouchFile } from "../engine/vouchfile.ts";
 import type { GraphQLClient } from "../github/client.ts";
@@ -131,7 +131,24 @@ export async function onlineProblems(
       continue;
     }
 
+    if (rule.kind === "org_member") {
+      const found = await gh
+        .graphql<{ organization: { login: string } | null }>(`query($login: String!) { organization(login: $login) { login } }`, {
+          login: rule.org,
+        })
+        .then(
+          (r) => r.organization !== null,
+          (e: Error) => {
+            if (/could not resolve to an organization/i.test(e.message)) return false;
+            throw e;
+          },
+        );
+      if (!found) error(["admit", i, "org_member"], `${rule.org} is not a GitHub organisation, so admit[${i}] admits no one`);
+      continue;
+    }
+
     const path = ["admit", i, "merged", "repo"];
+    if (rule.repo === ANY) continue;
     if (rule.repo === SELF) {
       if (home && !(await isSearchable(home))) warn(path, notSearchable(home));
       continue;

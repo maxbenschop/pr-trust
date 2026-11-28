@@ -33,6 +33,12 @@ function fakeGitHub(world: {
   failPulls?: number[]; // reading these pull requests throws
   concurrentEdit?: string; // a line another commit adds just before our first write
   staleReads?: boolean; // GraphQL keeps returning files as they were before any write
+  elsewhere?: Record<string, { mergedAt: string; mergedBy: string | null; owner: string }[]>; // login -> search results for `merged: { repo: any }`
+  failSearch?: boolean; // every search throws
+  created?: Record<string, string>; // login -> account creation time
+  failCreated?: boolean;
+  publicMembers?: string[]; // "org/login"
+  failOrgs?: boolean;
 }) {
   const calls: Call[] = [];
   const graphqlCalls: string[] = [];
@@ -49,11 +55,30 @@ function fakeGitHub(world: {
       if (query.includes("search(")) {
         const q = variables.q as string;
         graphqlCalls.push(q);
+        if (world.failSearch) throw new Error("search is down");
+        if (q.includes("-user:")) {
+          const login = /author:(\S+)/.exec(q)![1]!;
+          const all = world.elsewhere?.[login] ?? [];
+          const offset = Number(variables.after ?? 0);
+          const nodes = all.slice(offset, offset + 100).map((m) => ({
+            mergedAt: m.mergedAt,
+            mergedBy: m.mergedBy ? { login: m.mergedBy } : null,
+            repository: { owner: { login: m.owner } },
+          }));
+          const pageInfo = { hasNextPage: offset + 100 < all.length, endCursor: String(offset + 100) };
+          return { search: { issueCount: all.length, pageInfo, nodes } } as T;
+        }
         const repo = /repo:(\S+)/.exec(q)![1]!;
         if (world.unsearchable?.includes(repo)) return { search: { issueCount: 0 } } as T;
         const author = /author:(\S+)/.exec(q)?.[1];
         const n = author ? (world.merged?.[`${repo}:${author}`] ?? 0) : 1;
         return { search: { issueCount: n } } as T;
+      }
+      if (query.includes("createdAt")) {
+        graphqlCalls.push(`created ${variables.login}`);
+        if (world.failCreated) throw new Error("timed out");
+        const created = world.created?.[variables.login as string];
+        return { user: created ? { createdAt: created } : null } as T;
       }
       if (query.includes("user(login:")) {
         graphqlCalls.push(`user ${variables.login} after ${variables.after}`);
@@ -103,6 +128,12 @@ function fakeGitHub(world: {
         files[key] = Buffer.from(put.content, "base64").toString("utf8");
         shas.set(key, (shas.get(key) ?? 0) + 1);
         return { status: exists ? 200 : 201, data: {} as T };
+      }
+      const member = /^\/orgs\/([^/]+)\/public_members\/([^/]+)$/.exec(path);
+      if (member) {
+        if (world.failOrgs) throw new GitHubError("GitHub API GET returned 502", 502);
+        const key = `${member[1]}/${member[2]}`.toLowerCase();
+        return { status: world.publicMembers?.some((m) => m.toLowerCase() === key) ? 204 : 404, data: null as T };
       }
       if (path.startsWith("/users/")) {
         const login = decodeURIComponent(path.slice("/users/".length));
@@ -209,6 +240,103 @@ describe("runCheck", () => {
     const result = await runCheck(merged.gh, { ...base, pr: pr() });
     expect(result).toMatchObject({ status: "admitted", reason: "2 merged PRs in big/lib" });
     expect(result.warnings).toContain("No trust list found in friends/project.");
+  });
+
+  describe("rules about the author rather than a repository", () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+    const rules = (text: string) => ({ "me/repo:.github/trust.yml": `own_list: none\n${text}` });
+    const anyRule = "admit:\n  - merged: { repo: any, min: 2, within: 12mo }\n";
+
+    it("counts merges in others' repositories, leaving out self-merged ones, in one search", async () => {
+      const { gh, graphqlCalls } = fakeGitHub({
+        files: rules(anyRule),
+        elsewhere: {
+          newbie: [
+            { mergedAt: daysAgo(5), mergedBy: "newbie", owner: "newbies-org" }, // merged it themselves
+            { mergedAt: daysAgo(6), mergedBy: "maint", owner: "Newbie" }, // their own account's repo
+            { mergedAt: daysAgo(7), mergedBy: "maint", owner: "big" },
+            { mergedAt: daysAgo(8), mergedBy: null, owner: "lib" }, // merger deleted since
+          ],
+        },
+      });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result).toMatchObject({ status: "admitted", rule: "≥2 merged PRs in others' public repos within 12 months", reason: "2 merged PRs in others' public repositories" });
+      const searches = graphqlCalls.filter((c) => c.includes("-user:"));
+      expect(searches).toHaveLength(1);
+      expect(searches[0]).toMatch(/^is:pr is:merged is:public author:newbie -user:newbie merged:\S+\.\.\S+$/);
+    });
+
+    it("does not admit on self-merges alone, and reads only a few pages", async () => {
+      const own = Array.from({ length: 500 }, () => ({ mergedAt: daysAgo(3), mergedBy: "newbie", owner: "newbies-org" }));
+      const { gh, graphqlCalls } = fakeGitHub({ files: rules(anyRule), elsewhere: { newbie: own } });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result.status).toBe("unknown");
+      expect(graphqlCalls.filter((c) => c.includes("-user:"))).toHaveLength(3);
+      expect(result.warnings).toEqual([
+        "Search found 500 pull requests by newbie merged outside their own account, more than this check reads; of the first 300, 0 were merged by someone else, so that rule did not match.",
+      ]);
+    });
+
+    it("treats a failed search as no match, with a warning", async () => {
+      const { gh } = fakeGitHub({ files: rules(anyRule), failSearch: true });
+      const result = await runCheck(gh, { ...base, pr: pr() });
+      expect(result.status).toBe("unknown");
+      expect(result.warnings).toEqual([expect.stringMatching(/^Could not search newbie's merged pull requests elsewhere on GitHub \(search is down\)/)]);
+    });
+
+    it("admits public members of an organisation with one request", async () => {
+      const files = rules("admit:\n  - org_member: rust-lang\n");
+      const member = fakeGitHub({ files, publicMembers: ["rust-lang/newbie"] });
+      expect(await runCheck(member.gh, { ...base, pr: pr() })).toMatchObject({ status: "admitted", reason: "public member of rust-lang" });
+      expect(member.calls.filter((c) => c.path.includes("/public_members/")).map((c) => c.path)).toEqual(["/orgs/rust-lang/public_members/newbie"]);
+
+      const outsider = fakeGitHub({ files });
+      expect((await runCheck(outsider.gh, { ...base, pr: pr() })).status).toBe("unknown");
+
+      const failing = fakeGitHub({ files, failOrgs: true });
+      const result = await runCheck(failing.gh, { ...base, pr: pr() });
+      expect(result.status).toBe("unknown");
+      expect(result.warnings).toEqual([expect.stringMatching(/^Could not check whether newbie is a public member of rust-lang/)]);
+    });
+
+    describe("min_account_age", () => {
+      const files = rules("min_account_age: 30d\nadmit:\n  - org_member: rust-lang\n");
+      const publicMembers = ["rust-lang/newbie"];
+
+      it("holds back an account younger than the floor that a rule would admit", async () => {
+        const { gh } = fakeGitHub({ files, publicMembers, created: { newbie: daysAgo(3) } });
+        const result = await runCheck(gh, { ...base, pr: pr() });
+        expect(result).toMatchObject({
+          status: "unknown",
+          reason: "the account is 3 days old, and rules other than this project's own list need an account at least 30 days old",
+        });
+      });
+
+      it("admits an old enough account, and never asks for anyone no rule admits", async () => {
+        const old = fakeGitHub({ files, publicMembers, created: { newbie: daysAgo(31) } });
+        expect((await runCheck(old.gh, { ...base, pr: pr() })).status).toBe("admitted");
+        const nobody = fakeGitHub({ files, created: { newbie: daysAgo(3) } });
+        expect((await runCheck(nobody.gh, { ...base, pr: pr() })).reason).toBe("no rule admits this author");
+        expect(nobody.graphqlCalls.filter((c) => c.startsWith("created "))).toEqual([]);
+      });
+
+      it("does not hold back the project's own list", async () => {
+        const { gh, graphqlCalls } = fakeGitHub({
+          files: { ...rules(""), "me/repo:.github/trust.yml": "min_account_age: 30d\n", "me/repo:.github/VOUCHED.td": "newbie\n" },
+          created: { newbie: daysAgo(1) },
+        });
+        expect(await runCheck(gh, { ...base, pr: pr() })).toMatchObject({ status: "admitted", rule: "own list" });
+        expect(graphqlCalls.filter((c) => c.startsWith("created "))).toEqual([]);
+      });
+
+      it("treats an unreadable creation date as too new, with a warning", async () => {
+        const { gh } = fakeGitHub({ files, publicMembers, failCreated: true });
+        const result = await runCheck(gh, { ...base, pr: pr() });
+        expect(result.status).toBe("unknown");
+        expect(result.reason).toMatch(/^the account's age could not be confirmed/);
+        expect(result.warnings).toEqual([expect.stringMatching(/^Could not read when newbie's account was created/)]);
+      });
+    });
   });
 
   describe("merged rules on a repository missing from the search index", () => {
@@ -353,6 +481,22 @@ describe("planActions", () => {
     expect(body).toContain("- have a merged pull request in this repository in the last year, or");
     expect(body).toContain("- have 3 merged pull requests in [rust-lang/rust](https://github.com/rust-lang/rust) in the last 24 months\n");
     expect(body).not.toMatch(/\{\w+\}/);
+  });
+
+  it("describes merges elsewhere, organisation membership and the account age floor", () => {
+    const config = parseConfig(
+      "min_account_age: 30d\nadmit:\n  - merged: { repo: any, min: 3, within: 24mo }\n  - org_member: rust-lang\n",
+    );
+    expect(describeWaysToPass(config)).toBe(
+      "- are vouched for by a maintainer of this project, or\n" +
+        "- have 3 merged pull requests in the last 24 months in public repositories you do not own, merged by someone else, or\n" +
+        "- are a public member of the [rust-lang](https://github.com/orgs/rust-lang/people) organisation (members can make their membership public on that page)\n\n" +
+        "Apart from a maintainer's vouch, these only count for accounts at least 30 days old.",
+    );
+    const noOwnList = parseConfig("own_list: none\nmin_account_age: 1y\nadmit:\n  - org_member: rust-lang\n");
+    expect(describeWaysToPass(noOwnList)).toMatch(/\n\nThese only count for accounts at least 1 year old\.$/);
+    // Nothing for the floor to act on: it is not mentioned.
+    expect(describeWaysToPass(parseConfig("min_account_age: 30d\n"))).toBe("- are vouched for by a maintainer of this project");
   });
 
   it("uses a separate default comment for denounced authors", () => {

@@ -176,6 +176,7 @@ All keys are optional. See [`examples/trust.yml`](examples/trust.yml) for a comm
 |---|---|---|
 | `own_list` | `auto` | Your Vouch list: `auto` (`.github/VOUCHED.td`, then `VOUCHED.td`), a path, or `none`. The only list whose denouncements count. |
 | `admit` | none | Rules, checked in order (below). |
+| `min_account_age` | off | A period such as `30d`. When set, `admit` rules do not admit an account younger than this when the PR was opened; the PR is then `unknown`, with the account's age as the reason. Your own list and denouncements are unaffected. It only holds people back, never admits anyone: a guard against new accounts collecting cheap merges to pass `merged` rules. |
 | `exempt_paths` | none | Glob patterns. A PR that changes only matching files skips the check. |
 | `on_unknown` | `label` | `label` or `close`. |
 | `on_denounced` | `close` | `label` or `close`. |
@@ -191,6 +192,17 @@ All keys are optional. See [`examples/trust.yml`](examples/trust.yml) for a comm
 | `list: owner/repo:path/VOUCHED.td` | the same, for a list stored elsewhere |
 | `merged: { repo: owner/repo, min: 3, within: 24mo }` | they have at least `min` merged PRs in that repository within the period (`d`, `w`, `mo`, `y`; default 24mo) |
 | `merged: { repo: self, ... }` | the same, in this repository |
+| `merged: { repo: any, min: 3, within: 24mo }` | they have at least `min` PRs merged within the period into public repositories they do not own, each merged by someone other than them |
+| `org_member: some-org` | they are a public member of that GitHub organisation |
+
+`repo: any` is for newcomers who are not new to open source. A merge counts only when it is
+in a public repository outside the author's own account (search's `-user:`) and someone else
+merged it, which leaves out PRs merged into an organisation the author runs by themselves.
+A second account, or a friend with merge rights, can still get round it, so pair it with
+`min_account_age` and a `min` above 1. There is no star or size floor for the target
+repository: GitHub search cannot filter pull requests by their repository's stars, and
+reading each repository would cost a request per PR. `org_member` sees only public
+membership; members choose that on the organisation's People page.
 
 Trust goes one step only: a project you list admits the people it vouched for, not the
 people trusted by the projects it trusts.
@@ -334,6 +346,10 @@ The Action:
 - It acts on the PR's state when the event fired. A PR edited later is not checked again
   unless it is reopened, a maintainer comments `/vouch`, or (with the `push` trigger) your
   own list changes.
+- `merged: { repo: any }` reads at most 300 search results per check; an author with many
+  merges they made themselves may count short of `min`, with a warning. A failed search,
+  membership check or account lookup is a rule that does not match, plus a warning (with
+  `min_account_age`, an account whose age cannot be read is treated as too new).
 - It needs `pull_request_target`. With `pull_request`, PRs from forks get a read-only token,
   so labelling fails and the check reports an error.
 
@@ -352,6 +368,14 @@ The backtest:
   closed by a bot rather than rejected. Use `--until` to test a period before the gate.
 - Trust list history comes from the default branch's commit dates, and renamed accounts
   appear under their current login.
+- **`org_member` uses today's membership.** GitHub keeps no history of organisation
+  membership, so each author's public membership today is used for all their PRs: someone
+  who joined after opening a PR counts as a member when they opened it, and someone who has
+  left or hidden their membership since does not.
+- **`merged: { repo: any }` uses search as it is today.** Merge dates are exact, but merges
+  into repositories since deleted or made private are missed, and repository owners are
+  today's. It costs at least one search per external author.
+- `min_account_age` is replayed exactly: account creation dates do not change.
 
 ## Security
 

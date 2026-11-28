@@ -14,6 +14,16 @@ admit:
   - merged: { repo: rust-lang/rust, min: 3, within: 24mo }
   # A track record in this project.
   - merged: { repo: self, min: 1, within: 24mo }
+  # A track record anywhere on public GitHub: PRs merged by someone else into repositories
+  # the author does not own.
+  - merged: { repo: any, min: 3, within: 24mo }
+  # Public members of an organisation you trust.
+  - org_member: rust-lang
+
+# Off by default. When set, the admit rules above do not admit accounts younger than this
+# when the PR was opened (the own list is unaffected), so a new account cannot collect a few
+# cheap merges and pass.
+min_account_age: 30d
 
 # PRs that change only these paths skip the check (denounced authors are still blocked).
 exempt_paths:

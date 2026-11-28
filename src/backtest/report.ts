@@ -1,4 +1,5 @@
 import { describeRule, type TrustConfig } from "../engine/config.ts";
+import { formatDuration } from "../engine/duration.ts";
 import { OWN_LIST, type Decision } from "../engine/rules.ts";
 import type { ReplayRow } from "./replay.ts";
 
@@ -16,10 +17,14 @@ export type Summary = {
   repo: string;
   window: { from: string; to: string };
   rules: string[];
+  /** min_account_age as text, such as "30 days", or null when it is off. */
+  minAccountAge: string | null;
   ownListPath: string | null;
   totals: { prs: number; maintainer: number; bot: number; deleted: number; external: number; externalAuthors: number };
   byDecision: Record<Decision["status"], Counts>;
   byRule: Record<string, Counts>;
+  /** Unknown PRs that a rule would have admitted but for `min_account_age`; null when it is off. */
+  heldBack: Counts | null;
   /** Share of merged external PRs whose author the rules let through. */
   keeps: Rate;
   /** Share of rejected external PRs whose author the rules would have stopped. */
@@ -63,6 +68,10 @@ export function summarize(input: {
     byRule[rule] = counts(external.filter((r) => r.decision?.status === "admitted" && r.decision.rule === rule));
   }
 
+  const heldBack = config.minAccountAge
+    ? counts(external.filter((r) => r.decision?.status === "unknown" && r.decision.heldBack))
+    : null;
+
   const allowed = external.filter((r) => ALLOWED.has(r.decision!.status));
   const blocked = external.filter((r) => !ALLOWED.has(r.decision!.status));
   const merged = external.filter((r) => r.outcome === "merged");
@@ -93,6 +102,7 @@ export function summarize(input: {
     repo: input.repo,
     window: { from: input.from.toISOString(), to: input.to.toISOString() },
     rules: ruleOrder,
+    minAccountAge: config.minAccountAge ? formatDuration(config.minAccountAge) : null,
     ownListPath: input.ownListPath,
     totals: {
       prs: rows.length,
@@ -104,6 +114,7 @@ export function summarize(input: {
     },
     byDecision,
     byRule,
+    heldBack,
     keeps: rate(merged.filter((r) => ALLOWED.has(r.decision!.status)).length, merged.length),
     stops: rate(rejected.filter((r) => !ALLOWED.has(r.decision!.status)).length, rejected.length),
     mergeRate: { allowed: mergeRateOf(counts(allowed)), blocked: mergeRateOf(counts(blocked)) },
@@ -159,6 +170,7 @@ export function renderSummary(s: Summary): string {
     const detail = rule === OWN_LIST ? ` (${s.ownListPath ?? "none found"})` : "";
     out.push(`  ${i + 1}. ${rule}${detail}`);
   });
+  if (s.minAccountAge) out.push(`Rules after the own list admit only accounts at least ${s.minAccountAge} old (min_account_age).`);
   out.push("");
 
   const t = s.totals;
@@ -183,6 +195,7 @@ export function renderSummary(s: Summary): string {
   for (const [rule, c] of Object.entries(s.byRule)) table.push(line(`  via ${rule}`, c));
   if (s.byDecision.exempt.prs > 0) table.push(line("exempt paths", s.byDecision.exempt));
   table.push(line("unknown (blocked)", s.byDecision.unknown));
+  if (s.heldBack) table.push(line("  account too new", s.heldBack));
   if (s.byDecision.denounced.prs > 0) table.push(line("denounced", s.byDecision.denounced));
   out.push(...renderTable(table));
   out.push("");

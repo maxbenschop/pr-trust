@@ -7449,6 +7449,12 @@ function validateConfig(raw) {
       if (rule) admit.push(rule);
     });
   }
+  let minAccountAge = null;
+  if (raw.min_account_age !== void 0 && raw.min_account_age !== null && raw.min_account_age !== false) {
+    const parsed = typeof raw.min_account_age === "string" ? parseDuration(raw.min_account_age) : null;
+    if (parsed) minAccountAge = parsed;
+    else problems.add(["min_account_age"], `min_account_age must look like 30d, 8w, 6mo or 1y${monthsHint(raw.min_account_age)}`);
+  }
   const exemptPaths = [];
   if (raw.exempt_paths !== void 0) {
     if (!Array.isArray(raw.exempt_paths) || !raw.exempt_paths.every((p) => typeof p === "string" && p !== "")) {
@@ -7481,7 +7487,7 @@ function validateConfig(raw) {
     }
   }
   if (problems.length > 0) throw new ConfigError(problems.list);
-  return { ownList, admit, exemptPaths, onUnknown, onDenounced, comment, messageFile, labels };
+  return { ownList, admit, minAccountAge, exemptPaths, onUnknown, onDenounced, comment, messageFile, labels };
 }
 function parseChoice(raw, key, choices, fallback, problems) {
   const value = raw[key];
@@ -7505,7 +7511,7 @@ function parseRule(entry, index, problems) {
     const asList = typeof entry === "string" ? parseListRef(entry) : null;
     problems.add(
       path3,
-      asList ? `${where} must be a rule; to trust ${asList.repo}'s Vouch list, write "- list: ${entry}"` : `${where} must be a mapping such as { list: owner/repo } or { merged: {...} }`
+      asList ? `${where} must be a rule; to trust ${asList.repo}'s Vouch list, write "- list: ${entry}"` : `${where} must be a mapping such as { list: owner/repo }, { merged: {...} } or { org_member: some-org }`
     );
     return null;
   }
@@ -7514,7 +7520,7 @@ function parseRule(entry, index, problems) {
     const misplaced = keys.filter((k) => MERGED_KEYS.includes(k));
     problems.add(
       path3,
-      "merged" in entry && misplaced.length > 0 ? `${where} must have exactly one key ("list" or "merged"); ${misplaced.join(" and ")} belong${misplaced.length === 1 ? "s" : ""} inside it: indent ${misplaced.length === 1 ? "it" : "them"} further than merged:, or write merged: { repo: self, min: 1, within: 24mo }` : `${where} must have exactly one key ("list" or "merged")`
+      "merged" in entry && misplaced.length > 0 ? `${where} must have exactly one key ("list", "merged" or "org_member"); ${misplaced.join(" and ")} belong${misplaced.length === 1 ? "s" : ""} inside it: indent ${misplaced.length === 1 ? "it" : "them"} further than merged:, or write merged: { repo: self, min: 1, within: 24mo }` : `${where} must have exactly one key ("list", "merged" or "org_member")`
     );
     return null;
   }
@@ -7541,7 +7547,9 @@ function parseRule(entry, index, problems) {
       if (!MERGED_KEYS.includes(key)) problems.add([...path3, "merged", key], `${where}.merged: unknown key "${key}"${didYouMean(key, MERGED_KEYS)}`);
     }
     const repo = typeof m.repo === "string" ? m.repo.trim() : "";
-    if (repo !== SELF && !isRepoName(repo)) problems.add([...path3, "merged", "repo"], `${where}.merged.repo must be "self" or "owner/repo"`);
+    if (repo !== SELF && repo !== ANY && !isRepoName(repo)) {
+      problems.add([...path3, "merged", "repo"], `${where}.merged.repo must be "self", "any" or "owner/repo"`);
+    }
     const min = m.min ?? 1;
     if (typeof min !== "number" || !Number.isInteger(min) || min < 1) {
       problems.add([...path3, "merged", "min"], `${where}.merged.min must be a whole number of at least 1`);
@@ -7550,18 +7558,31 @@ function parseRule(entry, index, problems) {
     if (m.within !== void 0) {
       const parsed = typeof m.within === "string" ? parseDuration(m.within) : null;
       if (parsed) within = parsed;
-      else {
-        const months = typeof m.within === "string" ? /^\s*(\d+)\s*m(?:onths?)?\s*$/i.exec(m.within) : null;
-        const hint2 = months ? ` (did you mean "${months[1]}mo"?)` : "";
-        problems.add([...path3, "merged", "within"], `${where}.merged.within must look like 90d, 12w, 24mo or 2y${hint2}`);
-      }
+      else problems.add([...path3, "merged", "within"], `${where}.merged.within must look like 90d, 12w, 24mo or 2y${monthsHint(m.within)}`);
     }
     if (problems.length > before) return null;
     return { kind: "merged", repo, min, within };
   }
-  const hint = didYouMean(keys[0], ["list", "merged"]) || ` (expected "list" or "merged")`;
+  if ("org_member" in entry) {
+    const value = entry.org_member;
+    const org = typeof value === "string" ? value.trim() : "";
+    if (!ORG.test(org)) {
+      const hint2 = typeof value === "string" ? /^(?:@|https?:\/\/github\.com\/)([A-Za-z0-9-]+)\/?$/.exec(value.trim()) : null;
+      problems.add(
+        [...path3, "org_member"],
+        `${where}.org_member must be an organisation's login, such as rust-lang${hint2 ? ` (did you mean "${hint2[1]}"?)` : ""}`
+      );
+      return null;
+    }
+    return { kind: "org_member", org };
+  }
+  const hint = didYouMean(keys[0], RULE_KINDS) || ` (expected "list", "merged" or "org_member")`;
   problems.add(path3, `${where} has unknown rule "${keys[0]}"${hint}`);
   return null;
+}
+function monthsHint(value) {
+  const months = typeof value === "string" ? /^\s*(\d+)\s*m(?:onths?)?\s*$/i.exec(value) : null;
+  return months ? ` (did you mean "${months[1]}mo"?)` : "";
 }
 function didYouMean(value, options) {
   const want = value.trim().toLowerCase().replace(/[-\s]+/g, "_");
@@ -7605,13 +7626,14 @@ function describeRule(rule) {
   if (rule.kind === "list") {
     return `vouched in ${rule.source.repo}${rule.source.path ? `:${rule.source.path}` : ""}`;
   }
-  const where = rule.repo === SELF ? "this repo" : rule.repo;
+  if (rule.kind === "org_member") return `public member of ${rule.org}`;
+  const where = rule.repo === SELF ? "this repo" : rule.repo === ANY ? "others' public repos" : rule.repo;
   return `\u2265${rule.min} merged PR${rule.min === 1 ? "" : "s"} in ${where} within ${formatDuration(rule.within)}`;
 }
 function isObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var import_yaml, DEFAULT_LABELS, SELF, DEFAULT_WITHIN, VOUCH_FILE_CANDIDATES, DEFAULT_CONFIG_YAML, ConfigError, Problems, REPO, CONFIG_KEYS, MERGED_KEYS;
+var import_yaml, DEFAULT_LABELS, SELF, ANY, DEFAULT_WITHIN, VOUCH_FILE_CANDIDATES, DEFAULT_CONFIG_YAML, ConfigError, Problems, REPO, CONFIG_KEYS, MERGED_KEYS, RULE_KINDS, ORG;
 var init_config = __esm({
   "src/engine/config.ts"() {
     "use strict";
@@ -7624,6 +7646,7 @@ var init_config = __esm({
       error: "trust: check failed"
     };
     SELF = "self";
+    ANY = "any";
     DEFAULT_WITHIN = { amount: 24, unit: "mo" };
     VOUCH_FILE_CANDIDATES = [".github/VOUCHED.td", "VOUCHED.td"];
     DEFAULT_CONFIG_YAML = `own_list: auto
@@ -7655,6 +7678,7 @@ ${details.map((p) => `  - ${p.message}`).join("\n")}`);
       "version",
       "own_list",
       "admit",
+      "min_account_age",
       "exempt_paths",
       "on_unknown",
       "on_denounced",
@@ -7663,6 +7687,8 @@ ${details.map((p) => `  - ${p.message}`).join("\n")}`);
       "labels"
     ];
     MERGED_KEYS = ["repo", "min", "within"];
+    RULE_KINDS = ["list", "merged", "org_member"];
+    ORG = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
   }
 });
 
@@ -9488,22 +9514,18 @@ async function evaluate(input, sources) {
   const own = config.ownList ? await sources.ownList(login, at) : "unknown";
   if (own === "denounced") return { status: "denounced", reason: "denounced in this project's own list" };
   if (own === "vouched") return { status: "admitted", rule: OWN_LIST, reason: "vouched in this project's own list" };
+  let heldBack = null;
   for (const rule of config.admit) {
-    if (rule.kind === "list") {
-      if (await sources.listVouches(rule.source, login, at)) {
-        return { status: "admitted", rule: describeRule(rule), reason: `vouched in ${rule.source.repo}` };
+    const reason = await matchRule(rule, input, login, sources);
+    if (reason === null) continue;
+    if (config.minAccountAge) {
+      const created = await sources.accountCreatedAt(login);
+      if (created === null || created > subtractDuration(at, config.minAccountAge)) {
+        heldBack = { rule: describeRule(rule), accountCreatedAt: created?.toISOString() ?? null };
+        break;
       }
-      continue;
     }
-    const repo = rule.repo === SELF ? input.repo : rule.repo;
-    const count = await sources.mergedCount(repo, login, subtractDuration(at, rule.within), at, rule.min);
-    if (count >= rule.min) {
-      return {
-        status: "admitted",
-        rule: describeRule(rule),
-        reason: `${count} merged PR${count === 1 ? "" : "s"} in ${repo}`
-      };
-    }
+    return { status: "admitted", rule: describeRule(rule), reason };
   }
   if (config.exemptPaths.length > 0 && input.changedPaths && input.changedPaths.length > 0) {
     const matches = (0, import_picomatch.default)(config.exemptPaths, { dot: true });
@@ -9511,7 +9533,33 @@ async function evaluate(input, sources) {
       return { status: "exempt", reason: "only changes exempt paths" };
     }
   }
+  if (heldBack && config.minAccountAge) {
+    const age = formatDuration(config.minAccountAge);
+    const reason = heldBack.accountCreatedAt === null ? `the account's age could not be confirmed, and rules other than this project's own list need an account at least ${age} old` : `the account is ${ageInDays(new Date(heldBack.accountCreatedAt), at)} old, and rules other than this project's own list need an account at least ${age} old`;
+    return { status: "unknown", reason, heldBack };
+  }
   return { status: "unknown", reason: "no rule admits this author" };
+}
+async function matchRule(rule, input, login, sources) {
+  const { at } = input;
+  if (rule.kind === "list") {
+    return await sources.listVouches(rule.source, login, at) ? `vouched in ${rule.source.repo}` : null;
+  }
+  if (rule.kind === "org_member") {
+    return await sources.isPublicOrgMember(rule.org, login, at) ? `public member of ${rule.org}` : null;
+  }
+  const from = subtractDuration(at, rule.within);
+  if (rule.repo === ANY) {
+    const count2 = await sources.mergedElsewhereCount(login, from, at, rule.min);
+    return count2 >= rule.min ? `${count2} merged PR${count2 === 1 ? "" : "s"} in others' public repositories` : null;
+  }
+  const repo = rule.repo === SELF ? input.repo : rule.repo;
+  const count = await sources.mergedCount(repo, login, from, at, rule.min);
+  return count >= rule.min ? `${count} merged PR${count === 1 ? "" : "s"} in ${repo}` : null;
+}
+function ageInDays(created, at) {
+  const days = Math.max(0, Math.floor((at.getTime() - created.getTime()) / 864e5));
+  return `${days} day${days === 1 ? "" : "s"}`;
 }
 var import_picomatch, OWN_LIST;
 var init_rules = __esm({
@@ -9909,6 +9957,84 @@ async function countAuthorMerges(gh, options) {
   }
   return { count: seen.size, complete: false };
 }
+function mergedElsewhereQuery(login, from, to) {
+  return `is:pr is:merged is:public author:${login} -user:${login} merged:${isoSeconds(from)}..${isoSeconds(to)}`;
+}
+function toElsewhereMerge(node) {
+  if (!node.mergedAt || !node.repository) return null;
+  return { mergedAt: node.mergedAt, mergedBy: node.mergedBy?.login ?? null, owner: node.repository.owner.login };
+}
+function countsAsElsewhere(merge, login) {
+  const me = login.toLowerCase();
+  return merge.owner.toLowerCase() !== me && merge.mergedBy?.toLowerCase() !== me;
+}
+async function countMergedElsewhere(gh, options) {
+  const query = `query($q: String!, $after: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $after) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes { ${ELSEWHERE_FRAGMENT} }
+  }
+}`;
+  const q = mergedElsewhereQuery(options.login, options.from, options.to);
+  const toIso = options.to.toISOString();
+  let count = 0;
+  let read = 0;
+  let found = 0;
+  let after = null;
+  for (let page = 1; page <= options.maxPages; page++) {
+    const result = await gh.graphql(query, { q, after });
+    const { issueCount, pageInfo, nodes } = result.search;
+    found = issueCount;
+    for (const node of nodes) {
+      read++;
+      const merge = node ? toElsewhereMerge(node) : null;
+      if (!merge || merge.mergedAt >= toIso || !countsAsElsewhere(merge, options.login)) continue;
+      if (++count >= options.min) return { count, complete: true, found };
+    }
+    const unread = Math.max(0, issueCount - read);
+    if (count + unread < options.min || !pageInfo.hasNextPage || !pageInfo.endCursor) return { count, complete: true, found };
+    after = pageInfo.endCursor;
+  }
+  return { count, complete: false, found };
+}
+async function fetchMergedElsewhere(gh, login, from, to, onProgress) {
+  const raw = await searchAll(gh, {
+    base: `is:pr is:merged is:public author:${login} -user:${login}`,
+    field: "merged",
+    from,
+    to,
+    fragment: ELSEWHERE_FRAGMENT,
+    pageSize: 100,
+    onProgress
+  });
+  return raw.map(toElsewhereMerge).filter((m) => m !== null && countsAsElsewhere(m, login)).map((m) => m.mergedAt);
+}
+async function fetchAccountCreation(gh, logins) {
+  const created = /* @__PURE__ */ new Map();
+  const BATCH = 50;
+  for (let i = 0; i < logins.length; i += BATCH) {
+    const batch = logins.slice(i, i + BATCH);
+    const fields = batch.map((login, j) => `u${j}: user(login: ${JSON.stringify(login)}) { createdAt }`).join("\n  ");
+    let result;
+    try {
+      result = await gh.graphql(`query {
+  ${fields}
+}`);
+    } catch (error) {
+      if (!/could not resolve/i.test(error.message)) throw error;
+      if (batch.length > 1) {
+        for (const login of batch) for (const [k, v] of await fetchAccountCreation(gh, [login])) created.set(k, v);
+      }
+      continue;
+    }
+    batch.forEach((login, j) => {
+      const user = result[`u${j}`];
+      if (user) created.set(login.toLowerCase(), user.createdAt);
+    });
+  }
+  return created;
+}
 async function fetchFileVersions(gh, repo, path3) {
   const [owner, name] = repo.split("/");
   const historyQuery = `query($owner: String!, $name: String!, $path: String!, $after: String) {
@@ -9949,7 +10075,7 @@ async function fetchFileVersions(gh, repo, path3) {
   }
   return versions.sort((a, b) => a.at.localeCompare(b.at));
 }
-var SEARCH_CAP, MIN_SPLIT_MS, MIN_PAGE_SIZE, QUICK_ATTEMPTS, PULL_REQUEST_FRAGMENT;
+var SEARCH_CAP, MIN_SPLIT_MS, MIN_PAGE_SIZE, QUICK_ATTEMPTS, PULL_REQUEST_FRAGMENT, ELSEWHERE_FRAGMENT;
 var init_queries = __esm({
   "src/github/queries.ts"() {
     "use strict";
@@ -9966,6 +10092,7 @@ var init_queries = __esm({
   }
   files(first: 100) @include(if: $withFiles) { nodes { path } }
 `;
+    ELSEWHERE_FRAGMENT = "... on PullRequest { mergedAt mergedBy { login } repository { owner { login } } }";
   }
 });
 
@@ -10043,6 +10170,8 @@ function liveSources(gh, options) {
     }
     return pending;
   };
+  const memberships = /* @__PURE__ */ new Map();
+  const created = /* @__PURE__ */ new Map();
   return {
     warnings,
     async ownList(login) {
@@ -10087,10 +10216,55 @@ function liveSources(gh, options) {
         warnings.push(`${unchecked}, and listing ${login}'s pull requests failed (${error.message}), so their merge history there cannot be checked.`);
         return 0;
       }
+    },
+    async mergedElsewhereCount(login, from, to, min) {
+      if (!isLogin(login)) return 0;
+      try {
+        const result = await countMergedElsewhere(gh, { login, from, to, min, maxPages: ELSEWHERE_MAX_PAGES });
+        if (!result.complete) {
+          warnings.push(
+            `Search found ${result.found} pull requests by ${login} merged outside their own account, more than this check reads; of the first ${ELSEWHERE_MAX_PAGES * 100}, ${result.count} were merged by someone else, so that rule did not match.`
+          );
+        }
+        return result.count;
+      } catch (error) {
+        warnings.push(`Could not search ${login}'s merged pull requests elsewhere on GitHub (${error.message}), so that rule did not match.`);
+        return 0;
+      }
+    },
+    isPublicOrgMember(org, login) {
+      if (!isLogin(login)) return false;
+      const key = `${org.toLowerCase()}/${normalizeLogin(login)}`;
+      let pending = memberships.get(key);
+      if (!pending) {
+        pending = gh.rest("GET", `/orgs/${encodeURIComponent(org)}/public_members/${encodeURIComponent(login)}`, void 0, [404]).then(
+          (r) => r.status === 204,
+          (error) => {
+            warnings.push(`Could not check whether ${login} is a public member of ${org} (${error.message}), so that rule did not match.`);
+            return false;
+          }
+        );
+        memberships.set(key, pending);
+      }
+      return pending;
+    },
+    accountCreatedAt(login) {
+      const key = normalizeLogin(login);
+      let pending = created.get(key);
+      if (pending) return pending;
+      pending = gh.graphql(`query($login: String!) { user(login: $login) { createdAt } }`, { login }).then(
+        (r) => r.user ? new Date(r.user.createdAt) : null,
+        (error) => {
+          warnings.push(`Could not read when ${login}'s account was created (${error.message}), so min_account_age did not let rules admit it.`);
+          return null;
+        }
+      );
+      created.set(key, pending);
+      return pending;
     }
   };
 }
-var FALLBACK_MAX_PAGES;
+var FALLBACK_MAX_PAGES, ELSEWHERE_MAX_PAGES;
 var init_live = __esm({
   "src/action/live.ts"() {
     "use strict";
@@ -10098,6 +10272,7 @@ var init_live = __esm({
     init_vouchfile();
     init_queries();
     FALLBACK_MAX_PAGES = 5;
+    ELSEWHERE_MAX_PAGES = 3;
   }
 });
 
@@ -10230,15 +10405,28 @@ function describeWaysToPass(config) {
   for (const rule of config.admit) {
     if (rule.kind === "list") {
       ways.push(`are vouched for in [${rule.source.repo}](https://github.com/${rule.source.repo})`);
+    } else if (rule.kind === "org_member") {
+      ways.push(
+        `are a public member of the [${rule.org}](https://github.com/orgs/${rule.org}/people) organisation (members can make their membership public on that page)`
+      );
     } else {
-      const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
       const count = rule.min === 1 ? "a merged pull request" : `${rule.min} merged pull requests`;
       const period = rule.within.amount === 1 ? formatDuration(rule.within).slice(2) : formatDuration(rule.within);
-      ways.push(`have ${count} in ${where} in the last ${period}`);
+      if (rule.repo === ANY) {
+        ways.push(`have ${count} in the last ${period} in public repositories you do not own, merged by someone else`);
+      } else {
+        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
+        ways.push(`have ${count} in ${where} in the last ${period}`);
+      }
     }
   }
   if (ways.length === 0) return "- are admitted by a maintainer";
-  return ways.map((way, i) => `- ${way}${i < ways.length - 1 ? ", or" : ""}`).join("\n");
+  const list = ways.map((way, i) => `- ${way}${i < ways.length - 1 ? ", or" : ""}`).join("\n");
+  if (!config.minAccountAge || config.admit.length === 0) return list;
+  const besides = config.ownList ? "Apart from a maintainer's vouch, these" : "These";
+  return `${list}
+
+${besides} only count for accounts at least ${formatDuration(config.minAccountAge)} old.`;
 }
 async function loadMessage(gh, repo, config, warnings) {
   if (!config.messageFile) return DEFAULT_MESSAGE;
@@ -10471,13 +10659,28 @@ It prints the decision and what the Action would do. Nothing is written to GitHu
 
 // src/backtest/history.ts
 function historicalSources(data) {
+  const missing = (what) => new Error(`No ${what} loaded`);
   return {
     ownList: (login, at) => data.own?.status(login, at) ?? "unknown",
     listVouches: (source, login, at) => data.lists.get(listKey(source))?.status(login, at) === "vouched",
     mergedCount: (repo, login, from, to) => {
       const index = data.merges.get(repo.toLowerCase());
-      if (!index) throw new Error(`No merge history loaded for ${repo}`);
+      if (!index) throw missing(`merge history for ${repo}`);
       return index.count(login, from, to);
+    },
+    mergedElsewhereCount: (login, from, to) => {
+      if (!data.elsewhere) throw missing("merge history outside the authors' own repositories");
+      return data.elsewhere.count(login, from, to);
+    },
+    isPublicOrgMember: (org, login) => {
+      const members = data.orgMembers?.get(org.toLowerCase());
+      if (!members) throw missing(`membership of ${org}`);
+      return members.has(normalizeLogin(login));
+    },
+    accountCreatedAt: (login) => {
+      if (!data.accountCreated) throw missing("account creation dates");
+      const created = data.accountCreated.get(normalizeLogin(login));
+      return created ? new Date(created) : null;
     }
   };
 }
@@ -10554,6 +10757,56 @@ var init_history = __esm({
   }
 });
 
+// src/backtest/replay.ts
+function isBot(login, type) {
+  return type === "Bot" || /(bot|\[bot\])$/i.test(login ?? "");
+}
+function groupOf(pr, maintainers = /* @__PURE__ */ new Set()) {
+  if (!pr.author || pr.authorType === "Mannequin") return "deleted";
+  if (isBot(pr.author, pr.authorType)) return "bot";
+  if (MAINTAINER_ASSOCIATIONS2.has(pr.association) || maintainers.has(pr.author.toLowerCase())) return "maintainer";
+  return "external";
+}
+function outcomeOf(pr) {
+  if (pr.mergedAt) return "merged";
+  if (pr.state === "OPEN") return "open";
+  if (isBot(pr.closedBy, pr.closedByType)) return "auto_closed";
+  if (pr.closedBy && pr.author && pr.closedBy.toLowerCase() === pr.author.toLowerCase()) return "withdrawn";
+  return "rejected";
+}
+async function replay(prs, config, sources, repo, maintainers = /* @__PURE__ */ new Set()) {
+  const rows = [];
+  for (const pr of prs) {
+    const group = groupOf(pr, maintainers);
+    const outcome = outcomeOf(pr);
+    if (group !== "external") {
+      rows.push({ pr, group, outcome, decision: null });
+      continue;
+    }
+    const complete = pr.files !== null && pr.files.length >= pr.changedFiles;
+    const decision = await evaluate(
+      {
+        config,
+        repo,
+        login: pr.author,
+        at: new Date(pr.createdAt),
+        changedPaths: complete ? pr.files : null
+      },
+      sources
+    );
+    rows.push({ pr, group, outcome, decision });
+  }
+  return rows;
+}
+var MAINTAINER_ASSOCIATIONS2;
+var init_replay = __esm({
+  "src/backtest/replay.ts"() {
+    "use strict";
+    init_rules();
+    MAINTAINER_ASSOCIATIONS2 = /* @__PURE__ */ new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+  }
+});
+
 // src/backtest/load.ts
 async function loadBacktestData(gh, input) {
   const { repo, config, from, to } = input;
@@ -10606,7 +10859,57 @@ async function loadBacktestData(gh, input) {
       maintainers.add(pr.closedBy.toLowerCase());
     }
   }
-  return { prs, maintainers, own, lists, merges, notes };
+  const authors = [...new Set(prs.filter((pr) => groupOf(pr, maintainers) === "external").map((pr) => normalizeLogin(pr.author)))];
+  const extra = await loadAuthorFacts(gh, { config, authors, from, to, log, notes });
+  return { prs, maintainers, own, lists, merges, ...extra, notes };
+}
+async function loadAuthorFacts(gh, input) {
+  const { config, authors, from, to, log, notes } = input;
+  const result = {};
+  const anyStarts = config.admit.flatMap(
+    (rule) => rule.kind === "merged" && rule.repo === ANY ? [subtractDuration(from, rule.within).getTime()] : []
+  );
+  if (anyStarts.length > 0) {
+    const start = new Date(Math.min(...anyStarts));
+    log(`searching merged PRs outside their own repositories for ${authors.length} authors since ${start.toISOString().slice(0, 10)}`);
+    const rows = [];
+    let failed = 0;
+    for (const [i, login] of authors.entries()) {
+      if ((i + 1) % 25 === 0) log(`  ${i + 1} of ${authors.length} authors`);
+      try {
+        for (const mergedAt of await fetchMergedElsewhere(gh, login, start, to)) rows.push({ author: login, mergedAt, mergedBy: null });
+      } catch (error) {
+        failed++;
+        log(`  ${login}: ${error.message}`);
+      }
+    }
+    result.elsewhere = new MergeIndex(rows);
+    if (failed > 0) notes.push(`Merges elsewhere could not be searched for ${failed} author(s); for them "any" rules never matched.`);
+    notes.push(
+      "merged: { repo: any } reads GitHub search today: merges in repositories since deleted or made private are missed, and repository owners are today's."
+    );
+  }
+  const orgs = [...new Set(config.admit.flatMap((rule) => rule.kind === "org_member" ? [rule.org.toLowerCase()] : []))];
+  if (orgs.length > 0) {
+    result.orgMembers = /* @__PURE__ */ new Map();
+    for (const org of orgs) {
+      log(`checking public membership of ${org} for ${authors.length} authors`);
+      const members = /* @__PURE__ */ new Set();
+      for (const login of authors) {
+        const { status } = await gh.rest("GET", `/orgs/${encodeURIComponent(org)}/public_members/${encodeURIComponent(login)}`, void 0, [404]);
+        if (status === 204) members.add(login);
+      }
+      result.orgMembers.set(org, members);
+    }
+    notes.push(
+      `org_member uses today's public membership of ${orgs.join(", ")} for every PR: GitHub keeps no membership history, so someone who joined after opening a PR counts as a member when they opened it.`
+    );
+  }
+  if (config.minAccountAge) {
+    log(`reading account creation dates for ${authors.length} authors`);
+    result.accountCreated = await fetchAccountCreation(gh, authors);
+  }
+  return result;
 }
 async function loadList(gh, ref, log) {
   const candidates = ref.path ? [ref.path] : VOUCH_FILE_CANDIDATES;
@@ -10622,58 +10925,10 @@ var init_load = __esm({
     "use strict";
     init_config();
     init_duration();
+    init_vouchfile();
     init_queries();
     init_history();
-  }
-});
-
-// src/backtest/replay.ts
-function isBot(login, type) {
-  return type === "Bot" || /(bot|\[bot\])$/i.test(login ?? "");
-}
-function groupOf(pr, maintainers = /* @__PURE__ */ new Set()) {
-  if (!pr.author || pr.authorType === "Mannequin") return "deleted";
-  if (isBot(pr.author, pr.authorType)) return "bot";
-  if (MAINTAINER_ASSOCIATIONS2.has(pr.association) || maintainers.has(pr.author.toLowerCase())) return "maintainer";
-  return "external";
-}
-function outcomeOf(pr) {
-  if (pr.mergedAt) return "merged";
-  if (pr.state === "OPEN") return "open";
-  if (isBot(pr.closedBy, pr.closedByType)) return "auto_closed";
-  if (pr.closedBy && pr.author && pr.closedBy.toLowerCase() === pr.author.toLowerCase()) return "withdrawn";
-  return "rejected";
-}
-async function replay(prs, config, sources, repo, maintainers = /* @__PURE__ */ new Set()) {
-  const rows = [];
-  for (const pr of prs) {
-    const group = groupOf(pr, maintainers);
-    const outcome = outcomeOf(pr);
-    if (group !== "external") {
-      rows.push({ pr, group, outcome, decision: null });
-      continue;
-    }
-    const complete = pr.files !== null && pr.files.length >= pr.changedFiles;
-    const decision = await evaluate(
-      {
-        config,
-        repo,
-        login: pr.author,
-        at: new Date(pr.createdAt),
-        changedPaths: complete ? pr.files : null
-      },
-      sources
-    );
-    rows.push({ pr, group, outcome, decision });
-  }
-  return rows;
-}
-var MAINTAINER_ASSOCIATIONS2;
-var init_replay = __esm({
-  "src/backtest/replay.ts"() {
-    "use strict";
-    init_rules();
-    MAINTAINER_ASSOCIATIONS2 = /* @__PURE__ */ new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+    init_replay();
   }
 });
 
@@ -10695,6 +10950,7 @@ function summarize(input) {
   for (const rule of ruleOrder) {
     byRule[rule] = counts(external.filter((r) => r.decision?.status === "admitted" && r.decision.rule === rule));
   }
+  const heldBack = config.minAccountAge ? counts(external.filter((r) => r.decision?.status === "unknown" && r.decision.heldBack)) : null;
   const allowed = external.filter((r) => ALLOWED.has(r.decision.status));
   const blocked = external.filter((r) => !ALLOWED.has(r.decision.status));
   const merged = external.filter((r) => r.outcome === "merged");
@@ -10721,6 +10977,7 @@ function summarize(input) {
     repo: input.repo,
     window: { from: input.from.toISOString(), to: input.to.toISOString() },
     rules: ruleOrder,
+    minAccountAge: config.minAccountAge ? formatDuration(config.minAccountAge) : null,
     ownListPath: input.ownListPath,
     totals: {
       prs: rows.length,
@@ -10732,6 +10989,7 @@ function summarize(input) {
     },
     byDecision,
     byRule,
+    heldBack,
     keeps: rate(merged.filter((r) => ALLOWED.has(r.decision.status)).length, merged.length),
     stops: rate(rejected.filter((r) => !ALLOWED.has(r.decision.status)).length, rejected.length),
     mergeRate: { allowed: mergeRateOf(counts(allowed)), blocked: mergeRateOf(counts(blocked)) },
@@ -10774,6 +11032,7 @@ function renderSummary(s) {
     const detail = rule === OWN_LIST ? ` (${s.ownListPath ?? "none found"})` : "";
     out.push(`  ${i + 1}. ${rule}${detail}`);
   });
+  if (s.minAccountAge) out.push(`Rules after the own list admit only accounts at least ${s.minAccountAge} old (min_account_age).`);
   out.push("");
   const t = s.totals;
   out.push(`${num(t.prs)} PRs: ${num(t.maintainer)} by maintainers, ${num(t.bot)} by bots, ${num(t.deleted)} by deleted accounts,`);
@@ -10796,6 +11055,7 @@ function renderSummary(s) {
   for (const [rule, c] of Object.entries(s.byRule)) table.push(line(`  via ${rule}`, c));
   if (s.byDecision.exempt.prs > 0) table.push(line("exempt paths", s.byDecision.exempt));
   table.push(line("unknown (blocked)", s.byDecision.unknown));
+  if (s.heldBack) table.push(line("  account too new", s.heldBack));
   if (s.byDecision.denounced.prs > 0) table.push(line("denounced", s.byDecision.denounced));
   out.push(...renderTable(table));
   out.push("");
@@ -10852,6 +11112,7 @@ var init_report = __esm({
   "src/backtest/report.ts"() {
     "use strict";
     init_config();
+    init_duration();
     init_rules();
     ALLOWED = /* @__PURE__ */ new Set(["admitted", "exempt"]);
     pct = (value) => value === null ? "\u2013" : `${Math.round(value * 100)}%`;
@@ -11010,7 +11271,12 @@ function configWarnings(config) {
     for (let i = 0; i < config.admit.length; i++) {
       if (i === j) continue;
       const other = config.admit[i];
-      if (rule.kind === "list" && other.kind === "list") {
+      if (rule.kind === "org_member" && other.kind === "org_member") {
+        if (i < j && rule.org.toLowerCase() === other.org.toLowerCase()) {
+          warn(["admit", j], `admit[${j}] repeats admit[${i}] (${describeRule(rule)}); remove one of them`);
+          return;
+        }
+      } else if (rule.kind === "list" && other.kind === "list") {
         if (i < j && listKey(rule.source) === listKey(other.source)) {
           warn(["admit", j], `admit[${j}] repeats admit[${i}] (${describeRule(rule)}); remove one of them`);
           return;
@@ -11041,6 +11307,21 @@ function configWarnings(config) {
       );
     }
   });
+  if (config.minAccountAge && config.admit.length === 0) {
+    warn(
+      ["min_account_age"],
+      "min_account_age has no effect without admit rules: it only stops admit rules from admitting new accounts, and never applies to this project's own list"
+    );
+  }
+  if (!config.minAccountAge) {
+    const i = config.admit.findIndex((rule) => rule.kind === "merged" && rule.repo === ANY);
+    if (i !== -1) {
+      warn(
+        ["admit", i, "merged", "repo"],
+        `admit[${i}] counts merges anywhere on GitHub, which a new account can collect quickly in small projects; add min_account_age (such as min_account_age: 30d) so such accounts are not admitted`
+      );
+    }
+  }
   config.exemptPaths.forEach((pattern, i) => {
     if (/^\.?\//.test(pattern)) {
       warn(
@@ -11233,7 +11514,21 @@ async function onlineProblems(config, options) {
       }
       continue;
     }
+    if (rule.kind === "org_member") {
+      const found = await gh.graphql(`query($login: String!) { organization(login: $login) { login } }`, {
+        login: rule.org
+      }).then(
+        (r) => r.organization !== null,
+        (e) => {
+          if (/could not resolve to an organization/i.test(e.message)) return false;
+          throw e;
+        }
+      );
+      if (!found) error(["admit", i, "org_member"], `${rule.org} is not a GitHub organisation, so admit[${i}] admits no one`);
+      continue;
+    }
     const path3 = ["admit", i, "merged", "repo"];
+    if (rule.repo === ANY) continue;
     if (rule.repo === SELF) {
       if (home && !await isSearchable(home)) warn(path3, notSearchable(home));
       continue;

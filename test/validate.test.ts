@@ -34,11 +34,11 @@ labels: { unknwn: x }
       'error 2: unknown key "admits" (did you mean "admit"?)',
       'error 5: admit[0] must be a rule; to trust ghostty-org/ghostty\'s Vouch list, write "- list: ghostty-org/ghostty"',
       'error 6: admit[1].list must be "owner/repo" or "owner/repo:path/to/VOUCHED.td" (did you mean "ghostty-org/ghostty"?)',
-      'error 7: admit[2] must have exactly one key ("list" or "merged"); repo belongs inside it: indent it further than merged:, or write merged: { repo: self, min: 1, within: 24mo }',
+      'error 7: admit[2] must have exactly one key ("list", "merged" or "org_member"); repo belongs inside it: indent it further than merged:, or write merged: { repo: self, min: 1, within: 24mo }',
       'error 9: admit[3].merged: unknown key "minimum" (did you mean "min"?)',
       'error 9: admit[3].merged.within must look like 90d, 12w, 24mo or 2y (did you mean "24mo"?)',
       'error 10: admit[4] has unknown rule "merge" (did you mean "merged"?)',
-      'error 11: admit[5] has unknown rule "vouched" (expected "list" or "merged")',
+      'error 11: admit[5] has unknown rule "vouched" (expected "list", "merged" or "org_member")',
       'error 12: on_unknown must be "label" or "close" (did you mean "close"?)',
       'error 13: labels: unknown key "unknwn" (did you mean "unknown"?)',
     ]);
@@ -80,6 +80,18 @@ describe("lintConfig warnings", () => {
     expect(warnings("on_unknown: close\n")).toEqual([]);
     expect(warnings("own_list: none\non_unknown: close\nadmit:\n  - list: a/b\n")).toEqual([]);
     expect(warnings("own_list: none\non_unknown: label\n")).toEqual([]);
+  });
+
+  it("warns about the account age floor and merges anywhere", () => {
+    expect(warnings("min_account_age: 30d\n")).toEqual([expect.stringMatching(/^min_account_age has no effect without admit rules/)]);
+    const { findings } = lintConfig("admit:\n  - org_member: a\n  - merged: { repo: any, min: 2 }\n  - org_member: A\n");
+    expect(brief(findings)).toEqual([
+      "warning 4: admit[2] repeats admit[0] (public member of A); remove one of them",
+      expect.stringMatching(/^warning 3: admit\[1\] counts merges anywhere on GitHub, .* add min_account_age \(such as min_account_age: 30d\)/),
+    ]);
+    expect(warnings("min_account_age: 30d\nadmit:\n  - merged: { repo: any, min: 2 }\n  - merged: { repo: any, min: 2, within: 24mo }\n")).toEqual([
+      "admit[1] repeats admit[0] (≥2 merged PRs in others' public repos within 24 months); remove one of them",
+    ]);
   });
 
   it("warns about repeated and redundant rules", () => {
@@ -231,6 +243,7 @@ function fakeGitHub(world: {
   repos: Record<string, string>; // name as written -> current name; anything else does not exist
   files?: Record<string, string>; // "owner/repo:path" -> text
   unsearchable?: string[];
+  orgs?: string[];
 }) {
   const refs: string[] = [];
   const current = (name: string) => {
@@ -245,6 +258,11 @@ function fakeGitHub(world: {
         const repo = /repo:(\S+)/.exec(variables.q as string)![1]!;
         return { search: { issueCount: world.unsearchable?.includes(repo) ? 0 : 7 } } as T;
       }
+      if (query.includes("organization(")) {
+        const org = world.orgs?.find((o) => o.toLowerCase() === String(variables.login).toLowerCase());
+        if (!org) throw new GitHubError(`GitHub GraphQL error: Could not resolve to an Organization with the login of '${variables.login}'.`);
+        return { organization: { login: org } } as T;
+      }
       const repo = current(`${variables.owner}/${variables.name}`);
       if (query.includes("nameWithOwner")) return { repository: { nameWithOwner: repo } } as T;
       const repository: Record<string, unknown> = {};
@@ -258,6 +276,17 @@ function fakeGitHub(world: {
   };
   return { gh, refs };
 }
+
+describe("validateRules online: rules about the author", () => {
+  it("checks that organisations exist and leaves merges anywhere alone", async () => {
+    const { gh } = fakeGitHub({ repos: {}, orgs: ["rust-lang"] });
+    const result = await validateRules(
+      "own_list: none\nmin_account_age: 30d\nadmit:\n  - org_member: rust-lang\n  - org_member: no-such-org\n  - merged: { repo: any, min: 2 }\n",
+      { gh, repo: null },
+    );
+    expect(brief(result.findings)).toEqual(["error 5: no-such-org is not a GitHub organisation, so admit[1] admits no one"]);
+  });
+});
 
 describe("validateRules online", () => {
   const rules = `own_list: .github/VOUCHED.td

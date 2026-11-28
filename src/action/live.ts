@@ -1,8 +1,8 @@
 import { listKey, VOUCH_FILE_CANDIDATES, type ListRef } from "../engine/config.ts";
 import type { ListStatus, TrustSources } from "../engine/rules.ts";
 import { EMPTY_LIST, isLogin, normalizeLogin, parseVouchFile, type VouchList } from "../engine/vouchfile.ts";
-import type { GraphQLClient } from "../github/client.ts";
-import { countAuthorMerges, isoSeconds } from "../github/queries.ts";
+import type { GitHubClient, GraphQLClient } from "../github/client.ts";
+import { countAuthorMerges, countMergedElsewhere, isoSeconds } from "../github/queries.ts";
 
 /**
  * Reads files from the tip of a repository's default branch, never from a PR's branch,
@@ -52,6 +52,12 @@ export async function readFirstFile(
  */
 export const FALLBACK_MAX_PAGES = 5;
 
+/**
+ * Pages of 100 search results read for `merged: { repo: any }`. Only PRs merged by someone
+ * else count, so more than `min` results may be needed; three pages is plenty for any sane `min`.
+ */
+export const ELSEWHERE_MAX_PAGES = 3;
+
 export type LiveSources = TrustSources & {
   /** Problems worth showing the maintainer, such as an unreadable list. */
   warnings: string[];
@@ -63,7 +69,7 @@ export type LiveSources = TrustSources & {
  * reading it back, which might still return the version before the commit.
  */
 export function liveSources(
-  gh: GraphQLClient,
+  gh: GitHubClient,
   options: { repo: string; ownListPath: string | null; ownListText?: string | null },
 ): LiveSources {
   const warnings: string[] = [];
@@ -126,6 +132,9 @@ export function liveSources(
     return pending;
   };
 
+  const memberships = new Map<string, Promise<boolean>>();
+  const created = new Map<string, Promise<Date | null>>();
+
   return {
     warnings,
     async ownList(login): Promise<ListStatus> {
@@ -181,6 +190,57 @@ export function liveSources(
         warnings.push(`${unchecked}, and listing ${login}'s pull requests failed (${(error as Error).message}), so their merge history there cannot be checked.`);
         return 0;
       }
+    },
+    async mergedElsewhereCount(login, from, to, min) {
+      if (!isLogin(login)) return 0;
+      try {
+        const result = await countMergedElsewhere(gh, { login, from, to, min, maxPages: ELSEWHERE_MAX_PAGES });
+        if (!result.complete) {
+          warnings.push(
+            `Search found ${result.found} pull requests by ${login} merged outside their own account, more than this ` +
+              `check reads; of the first ${ELSEWHERE_MAX_PAGES * 100}, ${result.count} were merged by someone else, so that rule did not match.`,
+          );
+        }
+        return result.count;
+      } catch (error) {
+        warnings.push(`Could not search ${login}'s merged pull requests elsewhere on GitHub (${(error as Error).message}), so that rule did not match.`);
+        return 0;
+      }
+    },
+    isPublicOrgMember(org, login) {
+      if (!isLogin(login)) return false;
+      const key = `${org.toLowerCase()}/${normalizeLogin(login)}`;
+      let pending = memberships.get(key);
+      if (!pending) {
+        // 204: a public member. 404: not one, or a private member, or no such organisation.
+        pending = gh
+          .rest("GET", `/orgs/${encodeURIComponent(org)}/public_members/${encodeURIComponent(login)}`, undefined, [404])
+          .then(
+            (r) => r.status === 204,
+            (error: Error) => {
+              warnings.push(`Could not check whether ${login} is a public member of ${org} (${error.message}), so that rule did not match.`);
+              return false;
+            },
+          );
+        memberships.set(key, pending);
+      }
+      return pending;
+    },
+    accountCreatedAt(login) {
+      const key = normalizeLogin(login);
+      let pending = created.get(key);
+      if (pending) return pending;
+      pending = gh
+        .graphql<{ user: { createdAt: string } | null }>(`query($login: String!) { user(login: $login) { createdAt } }`, { login })
+        .then(
+          (r) => (r.user ? new Date(r.user.createdAt) : null),
+          (error: Error) => {
+            warnings.push(`Could not read when ${login}'s account was created (${error.message}), so min_account_age did not let rules admit it.`);
+            return null;
+          },
+        );
+      created.set(key, pending);
+      return pending;
     },
   };
 }
