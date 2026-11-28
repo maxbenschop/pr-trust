@@ -90,7 +90,7 @@ async function main(): Promise<number> {
 
     let suggestions: Suggestions | undefined;
     if (values.suggest) {
-      const rules = candidateRules(config, repo);
+      const rules = candidateRules(config, repo, gh.endpoints?.dotcom === false ? [] : undefined);
       const facts = await loadSuggestionFacts(gh, { config, data, rows, rules, from, to, maxAuthors, log });
       suggestions = await suggest({
         repo,

@@ -3,7 +3,7 @@ name: Website
 on:
   push:
     branches: [main]
-    paths: ["site/**", "lists/**", "scripts/**", ".github/workflows/pages.yml"]
+    paths: ["site/**", "docs/**", "lists/**", "scripts/**", ".github/workflows/pages.yml"]
   schedule:
     - cron: "17 6 * * 1" # weekly, to refresh the trust list directory
   workflow_dispatch:
@@ -32,6 +32,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm lists
+      - name: Render the documentation pages
+        run: pnpm build:docs
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site

@@ -15,7 +15,7 @@ export type PullRequestRow = {
   /** null when the account was deleted. */
   author: string | null;
   authorType: string | null;
-  /** Relationship to the repo as GitHub reports it today (see README limitations). */
+  /** Relationship to the repo as GitHub reports it today (see docs/limitations.md). */
   association: string;
   closedBy: string | null;
   closedByType: string | null;

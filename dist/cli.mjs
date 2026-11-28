@@ -444,9 +444,9 @@ var require_anchors = __commonJS({
       }
       return true;
     }
-    function anchorNames(root) {
+    function anchorNames(root2) {
       const anchors = /* @__PURE__ */ new Set();
-      visit.visit(root, {
+      visit.visit(root2, {
         Value(_key, node) {
           if (node.anchor)
             anchors.add(node.anchor);
@@ -9611,18 +9611,45 @@ var init_cache = __esm({
 
 // src/github/client.ts
 import { execFileSync } from "node:child_process";
-function resolveToken() {
-  const fromEnv = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-  if (fromEnv) return fromEnv;
+function root(value, name) {
+  let url;
   try {
-    const token = execFileSync("gh", ["auth", "token"], {
+    url = new URL(value);
+  } catch {
+    throw new GitHubError(`${name} is not a URL: "${value}"`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new GitHubError(`${name} must start with https://, got "${value}"`);
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+function resolveEndpoints(env = process.env) {
+  let api = env.GITHUB_API_URL ? root(env.GITHUB_API_URL, "GITHUB_API_URL") : null;
+  if (!api && env.GH_HOST && env.GH_HOST !== "github.com") {
+    const host = env.GH_HOST.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    api = root(host.endsWith(".ghe.com") ? `https://api.${host}` : `https://${host}/api/v3`, "GH_HOST");
+  }
+  api ??= DOTCOM_API;
+  const url = new URL(api);
+  const onPath = /\/api\/v3$/.test(url.pathname);
+  const graphql = env.GITHUB_GRAPHQL_URL ? root(env.GITHUB_GRAPHQL_URL, "GITHUB_GRAPHQL_URL") : onPath ? `${api.slice(0, -"/v3".length)}/graphql` : `${api}/graphql`;
+  const server = env.GITHUB_SERVER_URL ? root(env.GITHUB_SERVER_URL, "GITHUB_SERVER_URL") : api === DOTCOM_API ? DOTCOM : onPath ? api.slice(0, -"/api/v3".length) : `${url.protocol}//${url.host.replace(/^api\./, "")}`;
+  return { api, graphql, server, dotcom: api === DOTCOM_API };
+}
+function resolveToken(endpoints = resolveEndpoints(), env = process.env) {
+  const enterprise = endpoints.dotcom ? void 0 : env.GH_ENTERPRISE_TOKEN || env.GITHUB_ENTERPRISE_TOKEN;
+  const fromEnv = enterprise || env.GITHUB_TOKEN || env.GH_TOKEN;
+  if (fromEnv) return fromEnv;
+  const host = new URL(endpoints.server).host;
+  try {
+    const token = execFileSync("gh", endpoints.dotcom ? ["auth", "token"] : ["auth", "token", "--hostname", host], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     }).trim();
     if (token) return token;
   } catch {
   }
-  throw new GitHubError("No GitHub token found. Set GITHUB_TOKEN or run `gh auth login`.");
+  throw new GitHubError(
+    endpoints.dotcom ? "No GitHub token found. Set GITHUB_TOKEN or run `gh auth login`." : `No token found for ${host}. Set GH_ENTERPRISE_TOKEN or run \`gh auth login --hostname ${host}\`.`
+  );
 }
 function createClient(options) {
   const cache = options.cache ?? NO_CACHE;
@@ -9631,6 +9658,9 @@ function createClient(options) {
   const doFetch = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const stats = { requests: 0, cached: 0 };
+  const endpoints = options.endpoints ?? resolveEndpoints();
+  const cachePrefix = endpoints.dotcom ? "" : `${endpoints.graphql}
+`;
   const headers = {
     authorization: `bearer ${options.token}`,
     accept: "application/vnd.github+json",
@@ -9694,13 +9724,13 @@ function createClient(options) {
     }
   }
   async function graphql(query, variables = {}, call = {}) {
-    const key = JSON.stringify({ query, variables });
+    const key = cachePrefix + JSON.stringify({ query, variables });
     const hit = cache.get(key);
     if (hit !== void 0) {
       stats.cached++;
       return hit;
     }
-    const { response, body } = await send("POST", `${API}/graphql`, { query, variables }, call.attempts ?? MAX_ATTEMPTS, (_s, b) => {
+    const { response, body } = await send("POST", endpoints.graphql, { query, variables }, call.attempts ?? MAX_ATTEMPTS, (_s, b) => {
       if (b?.errors?.some((e) => e.type === "RATE_LIMITED")) return "GraphQL rate limit reached";
       if (b?.errors?.some((e) => /timeout|timed out|something went wrong/i.test(e.message))) return "GraphQL query timed out";
       return null;
@@ -9713,13 +9743,13 @@ function createClient(options) {
     return body?.data;
   }
   async function rest(method, path3, body, allow = []) {
-    const { response, body: parsed } = await send(method, `${API}${path3}`, body, MAX_ATTEMPTS);
+    const { response, body: parsed } = await send(method, `${endpoints.api}${path3}`, body, MAX_ATTEMPTS);
     if (!response.ok && !allow.includes(response.status)) {
       throw new GitHubError(`GitHub API ${method} ${path3} returned ${response.status}: ${messageOf(parsed, response)}`, response.status);
     }
     return { status: response.status, data: parsed };
   }
-  return { graphql, rest, stats };
+  return { graphql, rest, stats, endpoints };
 }
 function messageOf(body, response) {
   return body?.message ?? body?.errors?.map((e) => e.message).join("; ") ?? response.statusText;
@@ -9736,12 +9766,13 @@ function rateLimitWait(response) {
   }
   return 6e4;
 }
-var API, MAX_ATTEMPTS, GitHubError, RetriesExhaustedError;
+var DOTCOM_API, DOTCOM, MAX_ATTEMPTS, GitHubError, RetriesExhaustedError;
 var init_client = __esm({
   "src/github/client.ts"() {
     "use strict";
     init_cache();
-    API = "https://api.github.com";
+    DOTCOM_API = "https://api.github.com";
+    DOTCOM = "https://github.com";
     MAX_ATTEMPTS = 8;
     GitHubError = class extends Error {
       status;
@@ -10331,7 +10362,7 @@ async function runCheck(gh, input) {
     log(`${pr.repo}#${pr.number} by ${pr.author}: ${decision.status} (${decision.reason})`);
     const needsMessage = decision.status === "unknown" || decision.status === "denounced";
     const template = needsMessage ? await loadMessage(gh, pr.repo, config, warnings) : DEFAULT_MESSAGE;
-    const actions = planActions({ decision, config, pr, trigger: input.trigger, template });
+    const actions = planActions({ decision, config, pr, trigger: input.trigger, template, server: gh.endpoints?.server });
     if (!dryRun) await applyActions(gh, pr, actions);
     return {
       status: decision.status,
@@ -10399,15 +10430,15 @@ Thanks, @${author}. This pull request now passes the contributor check.
 ${FOOTER}
 `;
 }
-function describeWaysToPass(config) {
+function describeWaysToPass(config, server = "https://github.com") {
   const ways = [];
   if (config.ownList) ways.push("are vouched for by a maintainer of this project");
   for (const rule of config.admit) {
     if (rule.kind === "list") {
-      ways.push(`are vouched for in [${rule.source.repo}](https://github.com/${rule.source.repo})`);
+      ways.push(`are vouched for in [${rule.source.repo}](${server}/${rule.source.repo})`);
     } else if (rule.kind === "org_member") {
       ways.push(
-        `are a public member of the [${rule.org}](https://github.com/orgs/${rule.org}/people) organisation (members can make their membership public on that page)`
+        `are a public member of the [${rule.org}](${server}/orgs/${rule.org}/people) organisation (members can make their membership public on that page)`
       );
     } else {
       const count = rule.min === 1 ? "a merged pull request" : `${rule.min} merged pull requests`;
@@ -10415,7 +10446,7 @@ function describeWaysToPass(config) {
       if (rule.repo === ANY) {
         ways.push(`have ${count} in the last ${period} in public repositories you do not own, merged by someone else`);
       } else {
-        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
+        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](${server}/${rule.repo})`;
         ways.push(`have ${count} in ${where} in the last ${period}`);
       }
     }
@@ -10476,7 +10507,7 @@ function planActions(input) {
         repo: pr.repo,
         closing: close,
         denounced: kind === "denounced",
-        rules: describeWaysToPass(config)
+        rules: describeWaysToPass(config, input.server)
       })
     });
   }
@@ -11213,7 +11244,7 @@ var init_catalog2 = __esm({
 });
 
 // src/backtest/suggest.ts
-function candidateRules(config, repo) {
+function candidateRules(config, repo, catalog = CATALOG_LISTS) {
   const rules = [];
   const existing = new Set(config.admit.map(ruleYaml));
   for (const min of [1, 3, 10]) {
@@ -11222,7 +11253,7 @@ function candidateRules(config, repo) {
   }
   const listed = new Set(config.admit.flatMap((r) => r.kind === "list" ? [r.source.repo.toLowerCase()] : []));
   if (config.ownList) listed.add(repo.toLowerCase());
-  for (const source of CATALOG_LISTS) {
+  for (const source of catalog) {
     if (!listed.has(source.repo.toLowerCase())) rules.push({ kind: "list", source });
   }
   return rules;
@@ -11533,7 +11564,7 @@ async function main2() {
     summaries.push(summary);
     let suggestions;
     if (values.suggest) {
-      const rules = candidateRules(config, repo);
+      const rules = candidateRules(config, repo, gh.endpoints?.dotcom === false ? [] : void 0);
       const facts = await loadSuggestionFacts(gh, { config, data, rows, rules, from, to, maxAuthors, log });
       suggestions = await suggest({
         repo,
@@ -12076,7 +12107,8 @@ Usage:
   pr-trust validate [file] [--online --repo owner/repo]     Find mistakes in a rules file
 
 Run each command with --help for its options.
-Docs: https://maxbenschop.github.io/pr-trust/`;
+Docs: https://maxbenschop.github.io/pr-trust/docs/
+Another GitHub server: set GH_HOST=github.example.com`;
 var command = process.argv[2];
 process.argv.splice(2, 1);
 if (command === "check") await Promise.resolve().then(() => (init_check2(), check_exports));

@@ -11,7 +11,8 @@ Usage:
   pr-trust validate [file] [--online --repo owner/repo]     Find mistakes in a rules file
 
 Run each command with --help for its options.
-Docs: https://maxbenschop.github.io/pr-trust/`;
+Docs: https://maxbenschop.github.io/pr-trust/docs/
+Another GitHub server: set GH_HOST=github.example.com`;
 
 const command = process.argv[2];
 // Each command parses process.argv itself, so drop the command name first.

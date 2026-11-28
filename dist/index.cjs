@@ -2205,9 +2205,9 @@ var require_anchors = __commonJS({
       }
       return true;
     }
-    function anchorNames(root) {
+    function anchorNames(root2) {
       const anchors = /* @__PURE__ */ new Set();
-      visit.visit(root, {
+      visit.visit(root2, {
         Value(_key, node) {
           if (node.anchor)
             anchors.add(node.anchor);
@@ -9625,8 +9625,32 @@ var NO_CACHE = { get: () => void 0, set: () => {
 } };
 
 // src/github/client.ts
-var API = "https://api.github.com";
+var DOTCOM_API = "https://api.github.com";
+var DOTCOM = "https://github.com";
 var MAX_ATTEMPTS = 8;
+function root(value, name) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new GitHubError(`${name} is not a URL: "${value}"`);
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") throw new GitHubError(`${name} must start with https://, got "${value}"`);
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+function resolveEndpoints(env = process.env) {
+  let api = env.GITHUB_API_URL ? root(env.GITHUB_API_URL, "GITHUB_API_URL") : null;
+  if (!api && env.GH_HOST && env.GH_HOST !== "github.com") {
+    const host = env.GH_HOST.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    api = root(host.endsWith(".ghe.com") ? `https://api.${host}` : `https://${host}/api/v3`, "GH_HOST");
+  }
+  api ??= DOTCOM_API;
+  const url = new URL(api);
+  const onPath = /\/api\/v3$/.test(url.pathname);
+  const graphql = env.GITHUB_GRAPHQL_URL ? root(env.GITHUB_GRAPHQL_URL, "GITHUB_GRAPHQL_URL") : onPath ? `${api.slice(0, -"/v3".length)}/graphql` : `${api}/graphql`;
+  const server = env.GITHUB_SERVER_URL ? root(env.GITHUB_SERVER_URL, "GITHUB_SERVER_URL") : api === DOTCOM_API ? DOTCOM : onPath ? api.slice(0, -"/api/v3".length) : `${url.protocol}//${url.host.replace(/^api\./, "")}`;
+  return { api, graphql, server, dotcom: api === DOTCOM_API };
+}
 var GitHubError = class extends Error {
   status;
   constructor(message, status = null) {
@@ -9643,6 +9667,9 @@ function createClient(options) {
   const doFetch = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const stats = { requests: 0, cached: 0 };
+  const endpoints = options.endpoints ?? resolveEndpoints();
+  const cachePrefix = endpoints.dotcom ? "" : `${endpoints.graphql}
+`;
   const headers = {
     authorization: `bearer ${options.token}`,
     accept: "application/vnd.github+json",
@@ -9706,13 +9733,13 @@ function createClient(options) {
     }
   }
   async function graphql(query, variables = {}, call = {}) {
-    const key = JSON.stringify({ query, variables });
+    const key = cachePrefix + JSON.stringify({ query, variables });
     const hit = cache.get(key);
     if (hit !== void 0) {
       stats.cached++;
       return hit;
     }
-    const { response, body } = await send("POST", `${API}/graphql`, { query, variables }, call.attempts ?? MAX_ATTEMPTS, (_s, b) => {
+    const { response, body } = await send("POST", endpoints.graphql, { query, variables }, call.attempts ?? MAX_ATTEMPTS, (_s, b) => {
       if (b?.errors?.some((e) => e.type === "RATE_LIMITED")) return "GraphQL rate limit reached";
       if (b?.errors?.some((e) => /timeout|timed out|something went wrong/i.test(e.message))) return "GraphQL query timed out";
       return null;
@@ -9725,13 +9752,13 @@ function createClient(options) {
     return body?.data;
   }
   async function rest(method, path, body, allow = []) {
-    const { response, body: parsed } = await send(method, `${API}${path}`, body, MAX_ATTEMPTS);
+    const { response, body: parsed } = await send(method, `${endpoints.api}${path}`, body, MAX_ATTEMPTS);
     if (!response.ok && !allow.includes(response.status)) {
       throw new GitHubError(`GitHub API ${method} ${path} returned ${response.status}: ${messageOf(parsed, response)}`, response.status);
     }
     return { status: response.status, data: parsed };
   }
-  return { graphql, rest, stats };
+  return { graphql, rest, stats, endpoints };
 }
 function messageOf(body, response) {
   return body?.message ?? body?.errors?.map((e) => e.message).join("; ") ?? response.statusText;
@@ -10201,7 +10228,7 @@ async function runCheck(gh, input2) {
     log(`${pr.repo}#${pr.number} by ${pr.author}: ${decision.status} (${decision.reason})`);
     const needsMessage = decision.status === "unknown" || decision.status === "denounced";
     const template = needsMessage ? await loadMessage(gh, pr.repo, config, warnings) : DEFAULT_MESSAGE;
-    const actions = planActions({ decision, config, pr, trigger: input2.trigger, template });
+    const actions = planActions({ decision, config, pr, trigger: input2.trigger, template, server: gh.endpoints?.server });
     if (!dryRun) await applyActions(gh, pr, actions);
     return {
       status: decision.status,
@@ -10294,15 +10321,15 @@ Thanks, @${author}. This pull request now passes the contributor check.
 ${FOOTER}
 `;
 }
-function describeWaysToPass(config) {
+function describeWaysToPass(config, server = "https://github.com") {
   const ways = [];
   if (config.ownList) ways.push("are vouched for by a maintainer of this project");
   for (const rule of config.admit) {
     if (rule.kind === "list") {
-      ways.push(`are vouched for in [${rule.source.repo}](https://github.com/${rule.source.repo})`);
+      ways.push(`are vouched for in [${rule.source.repo}](${server}/${rule.source.repo})`);
     } else if (rule.kind === "org_member") {
       ways.push(
-        `are a public member of the [${rule.org}](https://github.com/orgs/${rule.org}/people) organisation (members can make their membership public on that page)`
+        `are a public member of the [${rule.org}](${server}/orgs/${rule.org}/people) organisation (members can make their membership public on that page)`
       );
     } else {
       const count = rule.min === 1 ? "a merged pull request" : `${rule.min} merged pull requests`;
@@ -10310,7 +10337,7 @@ function describeWaysToPass(config) {
       if (rule.repo === ANY) {
         ways.push(`have ${count} in the last ${period} in public repositories you do not own, merged by someone else`);
       } else {
-        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
+        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](${server}/${rule.repo})`;
         ways.push(`have ${count} in ${where} in the last ${period}`);
       }
     }
@@ -10377,7 +10404,7 @@ function planActions(input2) {
         repo: pr.repo,
         closing: close,
         denounced: kind === "denounced",
-        rules: describeWaysToPass(config)
+        rules: describeWaysToPass(config, input2.server)
       })
     });
   }
@@ -11060,6 +11087,7 @@ async function main() {
   const repo = process.env.GITHUB_REPOSITORY ?? "";
   const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(import_node_fs.default.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")) : {};
   const gh = createClient({ token, userAgent: "pr-trust-action", log: (m) => console.log(m) });
+  if (gh.endpoints && !gh.endpoints.dotcom) console.log(`Using the GitHub server at ${gh.endpoints.server}`);
   const configPath = input("config") || ".github/trust.yml";
   const dryRun = input("dry-run") === "true";
   const validate = input("validate");

@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 (2026-11-28)
 
+- GitHub Enterprise Server and GitHub Enterprise Cloud with data residency (`ghe.com`): the
+  Action follows the server its runner is on (`GITHUB_API_URL`, `GITHUB_GRAPHQL_URL`,
+  `GITHUB_SERVER_URL`), and links in its comment point there. The command-line tools take
+  `GH_HOST=github.example.com`, with `GH_ENTERPRISE_TOKEN` or that host's `gh` login. Rules
+  only see that server. Not yet run against a live Enterprise Server. See
+  `docs/enterprise.md`.
+- The documentation is now pages: `docs/*.md`, rendered on the website at
+  https://maxbenschop.github.io/pr-trust/docs/. The README keeps the quick start and links.
 - `backtest --suggest`: tries extra rules on the PRs your rules left unknown and shows what
   each would have let through, good and bad, with the best one or two as YAML to copy.
 - Three ways to recognise a newcomer who is not new to open source, each checked live by the

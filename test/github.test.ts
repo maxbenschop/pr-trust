@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createClient, RetriesExhaustedError, type GraphQLClient } from "../src/github/client.ts";
+import { createClient, resolveEndpoints, resolveToken, RetriesExhaustedError, type GraphQLClient } from "../src/github/client.ts";
 import { countAuthorMerges, countMergedElsewhere, fetchAccountCreation, fetchPullRequests, searchAll } from "../src/github/queries.ts";
 
 describe("searchAll", () => {
@@ -208,6 +208,98 @@ describe("createClient", () => {
   });
 });
 
+describe("resolveEndpoints", () => {
+  it("is github.com when nothing is set", () => {
+    expect(resolveEndpoints({})).toEqual({
+      api: "https://api.github.com",
+      graphql: "https://api.github.com/graphql",
+      server: "https://github.com",
+      dotcom: true,
+    });
+    expect(resolveEndpoints({ GH_HOST: "github.com" }).dotcom).toBe(true);
+  });
+
+  it("follows the variables GitHub Actions sets on an Enterprise Server runner", () => {
+    expect(
+      resolveEndpoints({
+        GITHUB_API_URL: "https://github.example.com/api/v3",
+        GITHUB_GRAPHQL_URL: "https://github.example.com/api/graphql",
+        GITHUB_SERVER_URL: "https://github.example.com",
+      }),
+    ).toEqual({
+      api: "https://github.example.com/api/v3",
+      graphql: "https://github.example.com/api/graphql",
+      server: "https://github.example.com",
+      dotcom: false,
+    });
+  });
+
+  it("works out the GraphQL and website addresses from the API address alone", () => {
+    expect(resolveEndpoints({ GITHUB_API_URL: "https://github.example.com/api/v3/" })).toMatchObject({
+      graphql: "https://github.example.com/api/graphql",
+      server: "https://github.example.com",
+    });
+    expect(resolveEndpoints({ GITHUB_API_URL: "https://api.acme.ghe.com" })).toMatchObject({
+      graphql: "https://api.acme.ghe.com/graphql",
+      server: "https://acme.ghe.com",
+      dotcom: false,
+    });
+  });
+
+  it("takes GH_HOST for the command line", () => {
+    expect(resolveEndpoints({ GH_HOST: "github.example.com" }).api).toBe("https://github.example.com/api/v3");
+    expect(resolveEndpoints({ GH_HOST: "acme.ghe.com" })).toMatchObject({ api: "https://api.acme.ghe.com", server: "https://acme.ghe.com" });
+  });
+
+  it("refuses an address that is not a web URL", () => {
+    expect(() => resolveEndpoints({ GITHUB_API_URL: "github.example.com" })).toThrow("GITHUB_API_URL is not a URL");
+    expect(() => resolveEndpoints({ GITHUB_API_URL: "file:///etc/passwd" })).toThrow("must start with https://");
+  });
+});
+
+describe("resolveToken", () => {
+  const ghes = resolveEndpoints({ GH_HOST: "github.example.com" });
+
+  it("prefers the enterprise token on another server, and ignores it on github.com", () => {
+    const env = { GH_ENTERPRISE_TOKEN: "ent", GITHUB_TOKEN: "dot" };
+    expect(resolveToken(ghes, env)).toBe("ent");
+    expect(resolveToken(resolveEndpoints({}), env)).toBe("dot");
+    expect(resolveToken(ghes, { GITHUB_TOKEN: "dot" })).toBe("dot");
+  });
+});
+
+describe("createClient on another server", () => {
+  const ok = () => new Response(JSON.stringify({ data: { n: 1 } }), { status: 200 });
+
+  it("sends REST and GraphQL calls to that server", async () => {
+    const urls: string[] = [];
+    const gh = createClient({
+      token: "t",
+      endpoints: resolveEndpoints({ GITHUB_API_URL: "https://github.example.com/api/v3" }),
+      fetchImpl: async (url) => {
+        urls.push(String(url));
+        return ok();
+      },
+    });
+    await gh.graphql("{ n }");
+    await gh.rest("GET", "/repos/a/b");
+    expect(urls).toEqual(["https://github.example.com/api/graphql", "https://github.example.com/api/v3/repos/a/b"]);
+  });
+
+  it("keeps its cache apart from github.com's", async () => {
+    const store = new Map<string, unknown>();
+    const cache = { get: (k: string) => store.get(k), set: (k: string, v: unknown) => void store.set(k, v) };
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return ok();
+    };
+    await createClient({ token: "t", cache, fetchImpl, endpoints: resolveEndpoints({}) }).graphql("{ n }");
+    await createClient({ token: "t", cache, fetchImpl, endpoints: resolveEndpoints({ GH_HOST: "github.example.com" }) }).graphql("{ n }");
+    expect(calls).toBe(2);
+  });
+});
+
 describe("countMergedElsewhere", () => {
   const from = new Date("2026-01-01T00:00:00Z");
   const to = new Date("2026-07-01T00:00:00Z");
@@ -279,5 +371,20 @@ describe("fetchAccountCreation", () => {
     const mixed = await fetchAccountCreation(gh, ["Alice", "an-org"]);
     expect([...mixed.keys()]).toEqual(["alice"]);
     expect(queries).toEqual(["Alice,an-org", "Alice", "an-org"]);
+  });
+});
+
+describe("docs build", () => {
+  it("makes GitHub's heading anchors and places links on the website", async () => {
+    const { slugify, siteHref } = await import("../scripts/build-docs.ts");
+    const seen = new Map<string, number>();
+    expect(slugify("Checking the rules file before merging", seen)).toBe("checking-the-rules-file-before-merging");
+    expect(slugify("What's different?", seen)).toBe("whats-different");
+    expect(slugify("Whats different", seen)).toBe("whats-different-1");
+    expect(siteHref("rules.md#rules-reference")).toBe("../rules/#rules-reference");
+    expect(siteHref("../examples/trust.yml")).toBe("https://github.com/maxbenschop/pr-trust/blob/main/examples/trust.yml");
+    expect(siteHref("#the-backtest")).toBe("#the-backtest");
+    expect(siteHref("https://example.com/a.md")).toBe("https://example.com/a.md");
+    expect(() => siteHref("other/page.md")).toThrow("Cannot place the link");
   });
 });

@@ -61,7 +61,7 @@ themselves whose judgement they trust.
 - [ ] Linked to an issue (unless trivial)
 - [ ] `pnpm test` and `pnpm typecheck` pass
 - [ ] `dist/` rebuilt if `src/` changed
-- [ ] README or website updated if behaviour or configuration changed
+- [ ] `docs/` (and the README or website, where they mention it) updated if behaviour or configuration changed
 
 ## Code of conduct
 

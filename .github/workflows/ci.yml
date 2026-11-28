@@ -23,6 +23,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm test
+      - name: Build the documentation pages (fails on a broken link)
+        run: pnpm build:docs
       - run: pnpm build
       - name: Check that dist/ matches the source
         run: |

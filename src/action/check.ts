@@ -132,7 +132,7 @@ export async function runCheck(gh: GitHubClient, input: CheckInput): Promise<Che
 
     const needsMessage = decision.status === "unknown" || decision.status === "denounced";
     const template = needsMessage ? await loadMessage(gh, pr.repo, config, warnings) : DEFAULT_MESSAGE;
-    const actions = planActions({ decision, config, pr, trigger: input.trigger, template });
+    const actions = planActions({ decision, config, pr, trigger: input.trigger, template, server: gh.endpoints?.server });
     if (!dryRun) await applyActions(gh, pr, actions);
 
     return {
@@ -237,15 +237,15 @@ function admittedMessage(author: string, reason: string): string {
 }
 
 /** The project's rules as a list a contributor can read. */
-export function describeWaysToPass(config: TrustConfig): string {
+export function describeWaysToPass(config: TrustConfig, server = "https://github.com"): string {
   const ways: string[] = [];
   if (config.ownList) ways.push("are vouched for by a maintainer of this project");
   for (const rule of config.admit) {
     if (rule.kind === "list") {
-      ways.push(`are vouched for in [${rule.source.repo}](https://github.com/${rule.source.repo})`);
+      ways.push(`are vouched for in [${rule.source.repo}](${server}/${rule.source.repo})`);
     } else if (rule.kind === "org_member") {
       ways.push(
-        `are a public member of the [${rule.org}](https://github.com/orgs/${rule.org}/people) organisation ` +
+        `are a public member of the [${rule.org}](${server}/orgs/${rule.org}/people) organisation ` +
           `(members can make their membership public on that page)`,
       );
     } else {
@@ -254,7 +254,7 @@ export function describeWaysToPass(config: TrustConfig): string {
       if (rule.repo === ANY) {
         ways.push(`have ${count} in the last ${period} in public repositories you do not own, merged by someone else`);
       } else {
-        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
+        const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](${server}/${rule.repo})`;
         ways.push(`have ${count} in ${where} in the last ${period}`);
       }
     }
@@ -311,6 +311,8 @@ export function planActions(input: {
   pr: PullRequestInfo;
   trigger: Trigger;
   template: string;
+  /** Website root for links in the comment; github.com when absent. */
+  server?: string;
 }): PlannedAction[] {
   const { decision, config, pr, trigger } = input;
   const kind: keyof Labels =
@@ -352,7 +354,7 @@ export function planActions(input: {
         repo: pr.repo,
         closing: close,
         denounced: kind === "denounced",
-        rules: describeWaysToPass(config),
+        rules: describeWaysToPass(config, input.server),
       }),
     });
   }

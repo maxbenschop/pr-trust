@@ -1,4 +1,4 @@
-import { ANY, describeRule, listKey, type Rule, type TrustConfig } from "../engine/config.ts";
+import { ANY, describeRule, listKey, type ListRef, type Rule, type TrustConfig } from "../engine/config.ts";
 import { subtractDuration, type Duration } from "../engine/duration.ts";
 import type { TrustSources } from "../engine/rules.ts";
 import { normalizeLogin } from "../engine/vouchfile.ts";
@@ -19,9 +19,10 @@ export const DEFAULT_SUGGEST_AUTHORS = 100;
 
 /**
  * The fixed set of extra rules to try: merges anywhere at three thresholds, and every
- * catalogued trust list the config does not already use.
+ * catalogued trust list the config does not already use. The catalogue lists github.com
+ * repositories, so callers on another server pass an empty one.
  */
-export function candidateRules(config: TrustConfig, repo: string): Rule[] {
+export function candidateRules(config: TrustConfig, repo: string, catalog: ListRef[] = CATALOG_LISTS): Rule[] {
   const rules: Rule[] = [];
   const existing = new Set(config.admit.map(ruleYaml));
   for (const min of [1, 3, 10]) {
@@ -31,7 +32,7 @@ export function candidateRules(config: TrustConfig, repo: string): Rule[] {
   const listed = new Set(config.admit.flatMap((r) => (r.kind === "list" ? [r.source.repo.toLowerCase()] : [])));
   // The project's own list is already checked first.
   if (config.ownList) listed.add(repo.toLowerCase());
-  for (const source of CATALOG_LISTS) {
+  for (const source of catalog) {
     if (!listed.has(source.repo.toLowerCase())) rules.push({ kind: "list", source });
   }
   return rules;

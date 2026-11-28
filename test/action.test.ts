@@ -496,6 +496,11 @@ describe("planActions", () => {
     const noOwnList = parseConfig("own_list: none\nmin_account_age: 1y\nadmit:\n  - org_member: rust-lang\n");
     expect(describeWaysToPass(noOwnList)).toMatch(/\n\nThese only count for accounts at least 1 year old\.$/);
     // Nothing for the floor to act on: it is not mentioned.
+    expect(describeWaysToPass(parseConfig("admit:\n  - list: acme/trust\n  - org_member: acme\n"), "https://github.example.com")).toBe(
+      "- are vouched for by a maintainer of this project, or\n" +
+        "- are vouched for in [acme/trust](https://github.example.com/acme/trust), or\n" +
+        "- are a public member of the [acme](https://github.example.com/orgs/acme/people) organisation (members can make their membership public on that page)",
+    );
     expect(describeWaysToPass(parseConfig("min_account_age: 30d\n"))).toBe("- are vouched for by a maintainer of this project");
   });
 

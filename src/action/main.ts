@@ -51,6 +51,7 @@ async function main(): Promise<number> {
   const repo = process.env.GITHUB_REPOSITORY ?? "";
   const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, "utf8")) : {};
   const gh = createClient({ token, userAgent: "pr-trust-action", log: (m) => console.log(m) });
+  if (gh.endpoints && !gh.endpoints.dotcom) console.log(`Using the GitHub server at ${gh.endpoints.server}`);
   const configPath = input("config") || ".github/trust.yml";
   const dryRun = input("dry-run") === "true";
 

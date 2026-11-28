@@ -12,5 +12,5 @@ Closes #
 
 - [ ] `pnpm test` and `pnpm typecheck` pass
 - [ ] `dist/` rebuilt with `pnpm build` if `src/` changed
-- [ ] README or website updated if behaviour or configuration changed
+- [ ] `docs/` (and the README or website, where they mention it) updated if behaviour or configuration changed
 - [ ] I have read and understood every line of this change (see CONTRIBUTING.md on AI-assisted work)

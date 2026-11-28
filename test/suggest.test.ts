@@ -212,3 +212,11 @@ describe("loadSuggestionFacts", () => {
     expect(notes).toContain("  2 of 2 authors");
   });
 });
+
+describe("candidateRules on another GitHub server", () => {
+  it("leaves out the catalogued github.com lists", () => {
+    const rules = candidateRules(parseConfig(""), "acme/app", []);
+    expect(rules.every((r) => r.kind === "merged")).toBe(true);
+    expect(rules).toHaveLength(3);
+  });
+});
