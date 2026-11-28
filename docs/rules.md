@@ -75,7 +75,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: maxbenschop/pr-trust@<a release newer than v0.1.1>
+      - uses: maxbenschop/pr-trust@cc7858b8951781f7f304c6d1f4b47cc964c18f2c # v0.1.2
         with:
           validate: .github/trust.yml
 ```

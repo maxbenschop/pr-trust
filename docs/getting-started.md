@@ -30,7 +30,7 @@ files on your default branch.
      check:
        runs-on: ubuntu-latest
        steps:
-         - uses: maxbenschop/pr-trust@00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6 # v0.1.1
+         - uses: maxbenschop/pr-trust@cc7858b8951781f7f304c6d1f4b47cc964c18f2c # v0.1.2
    ```
 
    Pin the Action to a release's full commit hash, not a tag.
@@ -81,7 +81,7 @@ check for anyone it admits ([full example](../examples/with-vouch.yml)):
 
 ```yaml
       - id: trust
-        uses: maxbenschop/pr-trust@00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6 # v0.1.1
+        uses: maxbenschop/pr-trust@cc7858b8951781f7f304c6d1f4b47cc964c18f2c # v0.1.2
         with:
           dry-run: "true"
       - if: steps.trust.outputs.admitted != 'true'

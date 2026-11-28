@@ -1,7 +1,7 @@
 "use strict";
 
 /* Release the snippets point at. Updated on each release. */
-var RELEASE = { repo: "maxbenschop/pr-trust", tag: "v0.1.1", sha: "00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6" };
+var RELEASE = { repo: "maxbenschop/pr-trust", tag: "v0.1.2", sha: "cc7858b8951781f7f304c6d1f4b47cc964c18f2c" };
 
 /* Backtest of the default rules (own list, then 1 merged PR here within 24 months),
    outside PRs opened 2025-11-27 to 2026-11-27. From results/all.json. */

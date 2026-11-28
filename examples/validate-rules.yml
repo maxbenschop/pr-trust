@@ -21,8 +21,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      # Pin to the full commit hash of a release newer than v0.1.1 (the first with validate).
+      # Pin to the full commit hash of a release; validate needs v0.1.2 or later.
       # An older release ignores the input and checks the pull request instead.
-      - uses: maxbenschop/pr-trust@<release commit hash>
+      - uses: maxbenschop/pr-trust@cc7858b8951781f7f304c6d1f4b47cc964c18f2c # v0.1.2
         with:
           validate: .github/trust.yml

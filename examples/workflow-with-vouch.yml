@@ -30,5 +30,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Pin to a release commit; replace the hash with the release you use.
-      # /vouch needs a release newer than v0.1.1.
-      - uses: maxbenschop/pr-trust@00e722ff4f51d4bdf2b1ed89316b741ef5cf0ac6 # v0.1.1
+      # /vouch needs v0.1.2 or later.
+      - uses: maxbenschop/pr-trust@cc7858b8951781f7f304c6d1f4b47cc964c18f2c # v0.1.2
