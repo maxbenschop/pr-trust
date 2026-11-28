@@ -1,4 +1,5 @@
-import { DEFAULT_CONFIG_YAML, DEFAULT_LABELS, parseConfig, type Labels, type TrustConfig } from "../engine/config.ts";
+import { DEFAULT_CONFIG_YAML, DEFAULT_LABELS, parseConfig, SELF, type Labels, type TrustConfig } from "../engine/config.ts";
+import { formatDuration } from "../engine/duration.ts";
 import { evaluate, type Decision } from "../engine/rules.ts";
 import type { GitHubClient } from "../github/client.ts";
 import { liveSources, readFirstFile } from "./live.ts";
@@ -185,13 +186,56 @@ async function changedFiles(gh: GitHubClient, pr: PullRequestInfo): Promise<stri
   return files.length >= pr.changedFiles ? files : null;
 }
 
-export const DEFAULT_MESSAGE = `Thanks for opening this pull request, @{author}.
+const SITE = "https://maxbenschop.github.io/pr-trust";
+const HEADING = (title: string) =>
+  `### <img src="${SITE}/logo-mark.png" alt="" width="25" height="14">&nbsp; Contributor check: ${title}`;
+const FOOTER = `<sub>Checked by <a href="${SITE}/">pr-trust</a>. It looks at who opened the pull request, never at the code.</sub>`;
 
-This project accepts pull requests from contributors it already trusts, and this check could not confirm that for your account ({reason}).
+export const DEFAULT_MESSAGE = `${HEADING("author not recognised yet")}
 
-{next}
+Thanks for opening this pull request, @{author}. This project accepts pull requests from contributors it already trusts, and this check could not confirm that for your account.
 
-[What this label means, and how to get vouched](https://maxbenschop.github.io/pr-trust/contributors/)`;
+> [!{alert}]
+> {next}
+
+**You pass this check when you:**
+
+{rules}
+
+[What this label means, and how to get vouched](${SITE}/contributors/)
+
+${FOOTER}`;
+
+const DENOUNCED_MESSAGE = `${HEADING("not accepted")}
+
+@{author}, this project does not accept pull requests from your account ({reason}).
+
+> [!{alert}]
+> {next}
+
+${FOOTER}`;
+
+function admittedMessage(author: string, reason: string): string {
+  return `${COMMENT_MARKER}\n${HEADING("passed")}\n\nThanks, @${author}. This pull request now passes the contributor check.\n\n**Why:** ${reason}\n\n${FOOTER}\n`;
+}
+
+/** The project's rules as a list a contributor can read. */
+export function describeWaysToPass(config: TrustConfig): string {
+  const ways: string[] = [];
+  if (config.ownList) ways.push("are vouched for by a maintainer of this project");
+  for (const rule of config.admit) {
+    if (rule.kind === "list") {
+      ways.push(`are vouched for in [${rule.source.repo}](https://github.com/${rule.source.repo})`);
+    } else {
+      const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
+      const count = rule.min === 1 ? "a merged pull request" : `${rule.min} merged pull requests`;
+      const period = rule.within.amount === 1 ? formatDuration(rule.within).slice(2) : formatDuration(rule.within);
+      ways.push(`have ${count} in ${where} in the last ${period}`);
+    }
+  }
+  if (ways.length === 0) return "- are admitted by a maintainer";
+  return ways.map((way, i) => `- ${way}${i < ways.length - 1 ? ", or" : ""}`).join("\n");
+}
 
 async function loadMessage(gh: GitHubClient, repo: string, config: TrustConfig, warnings: string[]): Promise<string> {
   if (!config.messageFile) return DEFAULT_MESSAGE;
@@ -201,14 +245,22 @@ async function loadMessage(gh: GitHubClient, repo: string, config: TrustConfig, 
   return DEFAULT_MESSAGE;
 }
 
-export function renderMessage(template: string, values: { author: string; reason: string; repo: string; closing: boolean }): string {
-  const next = values.closing
-    ? "It has been closed automatically. If you would like to contribute, introduce yourself in an issue or discussion so a maintainer can vouch for you, then open it again."
-    : "A maintainer will review it when they can, which may take longer than usual.";
-  const body = template
+export function renderMessage(
+  template: string,
+  values: { author: string; reason: string; repo: string; closing: boolean; denounced?: boolean; rules?: string },
+): string {
+  const denounced = values.denounced ?? false;
+  const next = denounced
+    ? `${values.closing ? "It has been closed automatically." : "A maintainer will decide what happens to it."} If you think this is a mistake, contact a maintainer.`
+    : values.closing
+      ? "It has been closed automatically. If you would like to contribute, introduce yourself in an issue or discussion so a maintainer can vouch for you, then open it again."
+      : "A maintainer will review it when they can, which may take longer than usual.";
+  const body = (denounced && template === DEFAULT_MESSAGE ? DENOUNCED_MESSAGE : template)
     .replaceAll("{author}", values.author)
     .replaceAll("{reason}", values.reason)
     .replaceAll("{repo}", values.repo)
+    .replaceAll("{rules}", values.rules ?? "")
+    .replaceAll("{alert}", values.closing ? "IMPORTANT" : "NOTE")
     .replaceAll("{next}", next);
   return `${COMMENT_MARKER}\n${body.trim()}\n`;
 }
@@ -247,7 +299,7 @@ export function planActions(input: {
   if (kind === "admitted") {
     actions.push({
       kind: "update-comment",
-      body: `${COMMENT_MARKER}\nThanks, @${pr.author}. This pull request now passes the contributor check (${decision.reason}).\n`,
+      body: admittedMessage(pr.author!, decision.reason),
     });
     return actions;
   }
@@ -261,7 +313,14 @@ export function planActions(input: {
   if (close || config.comment === "unknown") {
     actions.push({
       kind: "comment",
-      body: renderMessage(input.template, { author: pr.author!, reason: decision.reason, repo: pr.repo, closing: close }),
+      body: renderMessage(input.template, {
+        author: pr.author!,
+        reason: decision.reason,
+        repo: pr.repo,
+        closing: close,
+        denounced: kind === "denounced",
+        rules: describeWaysToPass(config),
+      }),
     });
   }
   if (close) actions.push({ kind: "close" });

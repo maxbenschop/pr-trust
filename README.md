@@ -91,7 +91,7 @@ All keys are optional. See [`examples/trust.yml`](examples/trust.yml) for a comm
 | `on_unknown` | `label` | `label` or `close`. |
 | `on_denounced` | `close` | `label` or `close`. |
 | `comment` | `unknown` | Comment on PRs from unadmitted authors (`unknown`), or only when closing (`never`). |
-| `message_file` | built-in | Markdown file on your default branch with the comment text. Placeholders: `{author}`, `{reason}`, `{repo}`, `{next}`. See [`examples/trust-message.md`](examples/trust-message.md). |
+| `message_file` | built-in | Markdown file on your default branch with the comment text. Placeholders: `{author}`, `{reason}`, `{repo}`, `{next}`, `{rules}` (your rules as a list). See [`examples/trust-message.md`](examples/trust-message.md). |
 | `labels` | `trust: admitted`, `trust: unknown`, `trust: denounced`, `trust: check failed` | Label names for `admitted`, `unknown`, `denounced` and `error`; `""` turns one off. |
 
 `admit` rules:

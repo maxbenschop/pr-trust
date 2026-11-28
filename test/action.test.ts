@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asAuthor, COMMENT_MARKER, planActions, runCheck, type PullRequestInfo } from "../src/action/check.ts";
+import { asAuthor, COMMENT_MARKER, DEFAULT_MESSAGE, describeWaysToPass, planActions, renderMessage, runCheck, type PullRequestInfo } from "../src/action/check.ts";
 import { summaryMarkdown } from "../src/action/report.ts";
 import { parseConfig } from "../src/engine/config.ts";
 import type { GitHubClient, RestResponse } from "../src/github/client.ts";
@@ -164,6 +164,25 @@ describe("runCheck", () => {
 });
 
 describe("planActions", () => {
+  it("lists the project's rules in the default comment", () => {
+    const config = parseConfig("admit:\n  - list: ghostty-org/ghostty\n  - merged: { repo: self, min: 1, within: 1y }\n  - merged: { repo: rust-lang/rust, min: 3, within: 24mo }\n");
+    const body = renderMessage(DEFAULT_MESSAGE, { author: "newbie", reason: "r", repo: "me/repo", closing: false, rules: describeWaysToPass(config) });
+    expect(body).toContain("Contributor check: author not recognised yet");
+    expect(body).toContain("> [!NOTE]\n> A maintainer will review it");
+    expect(body).toContain("- are vouched for by a maintainer of this project, or");
+    expect(body).toContain("- are vouched for in [ghostty-org/ghostty](https://github.com/ghostty-org/ghostty), or");
+    expect(body).toContain("- have a merged pull request in this repository in the last year, or");
+    expect(body).toContain("- have 3 merged pull requests in [rust-lang/rust](https://github.com/rust-lang/rust) in the last 24 months\n");
+    expect(body).not.toMatch(/\{\w+\}/);
+  });
+
+  it("uses a separate default comment for denounced authors", () => {
+    const body = renderMessage(DEFAULT_MESSAGE, { author: "bad", reason: "denounced in this project's own list", repo: "me/repo", closing: true, denounced: true });
+    expect(body).toContain("Contributor check: not accepted");
+    expect(body).toContain("> [!IMPORTANT]\n> It has been closed automatically. If you think this is a mistake");
+    expect(body).not.toContain("You pass this check");
+  });
+
   it("leaves out turned-off labels and comments", () => {
     const config = parseConfig('comment: never\nlabels: { unknown: "" }\n');
     const actions = planActions({

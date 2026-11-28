@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- New default comment: a heading with the result, a note saying what happens next, and the
+  project's rules as a list of ways to pass. Denounced authors get their own shorter comment.
+- `{rules}` placeholder for custom messages.
+- New logo; the Marketplace icon is now a check mark.
+
 ## 0.1.1 (2026-11-28)
 
 - `as-author` input: check a pull request as if another account had opened it, to try out

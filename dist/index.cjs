@@ -9751,13 +9751,58 @@ async function changedFiles(gh, pr) {
   }
   return files.length >= pr.changedFiles ? files : null;
 }
-var DEFAULT_MESSAGE = `Thanks for opening this pull request, @{author}.
+var SITE = "https://maxbenschop.github.io/pr-trust";
+var HEADING = (title) => `### <img src="${SITE}/logo-mark.png" alt="" width="25" height="14">&nbsp; Contributor check: ${title}`;
+var FOOTER = `<sub>Checked by <a href="${SITE}/">pr-trust</a>. It looks at who opened the pull request, never at the code.</sub>`;
+var DEFAULT_MESSAGE = `${HEADING("author not recognised yet")}
 
-This project accepts pull requests from contributors it already trusts, and this check could not confirm that for your account ({reason}).
+Thanks for opening this pull request, @{author}. This project accepts pull requests from contributors it already trusts, and this check could not confirm that for your account.
 
-{next}
+> [!{alert}]
+> {next}
 
-[What this label means, and how to get vouched](https://maxbenschop.github.io/pr-trust/contributors/)`;
+**You pass this check when you:**
+
+{rules}
+
+[What this label means, and how to get vouched](${SITE}/contributors/)
+
+${FOOTER}`;
+var DENOUNCED_MESSAGE = `${HEADING("not accepted")}
+
+@{author}, this project does not accept pull requests from your account ({reason}).
+
+> [!{alert}]
+> {next}
+
+${FOOTER}`;
+function admittedMessage(author, reason) {
+  return `${COMMENT_MARKER}
+${HEADING("passed")}
+
+Thanks, @${author}. This pull request now passes the contributor check.
+
+**Why:** ${reason}
+
+${FOOTER}
+`;
+}
+function describeWaysToPass(config) {
+  const ways = [];
+  if (config.ownList) ways.push("are vouched for by a maintainer of this project");
+  for (const rule of config.admit) {
+    if (rule.kind === "list") {
+      ways.push(`are vouched for in [${rule.source.repo}](https://github.com/${rule.source.repo})`);
+    } else {
+      const where = rule.repo === SELF ? "this repository" : `[${rule.repo}](https://github.com/${rule.repo})`;
+      const count = rule.min === 1 ? "a merged pull request" : `${rule.min} merged pull requests`;
+      const period = rule.within.amount === 1 ? formatDuration(rule.within).slice(2) : formatDuration(rule.within);
+      ways.push(`have ${count} in ${where} in the last ${period}`);
+    }
+  }
+  if (ways.length === 0) return "- are admitted by a maintainer";
+  return ways.map((way, i) => `- ${way}${i < ways.length - 1 ? ", or" : ""}`).join("\n");
+}
 async function loadMessage(gh, repo, config, warnings) {
   if (!config.messageFile) return DEFAULT_MESSAGE;
   const found = await readFirstFile(gh, repo, [config.messageFile]);
@@ -9766,8 +9811,9 @@ async function loadMessage(gh, repo, config, warnings) {
   return DEFAULT_MESSAGE;
 }
 function renderMessage(template, values) {
-  const next = values.closing ? "It has been closed automatically. If you would like to contribute, introduce yourself in an issue or discussion so a maintainer can vouch for you, then open it again." : "A maintainer will review it when they can, which may take longer than usual.";
-  const body = template.replaceAll("{author}", values.author).replaceAll("{reason}", values.reason).replaceAll("{repo}", values.repo).replaceAll("{next}", next);
+  const denounced = values.denounced ?? false;
+  const next = denounced ? `${values.closing ? "It has been closed automatically." : "A maintainer will decide what happens to it."} If you think this is a mistake, contact a maintainer.` : values.closing ? "It has been closed automatically. If you would like to contribute, introduce yourself in an issue or discussion so a maintainer can vouch for you, then open it again." : "A maintainer will review it when they can, which may take longer than usual.";
+  const body = (denounced && template === DEFAULT_MESSAGE ? DENOUNCED_MESSAGE : template).replaceAll("{author}", values.author).replaceAll("{reason}", values.reason).replaceAll("{repo}", values.repo).replaceAll("{rules}", values.rules ?? "").replaceAll("{alert}", values.closing ? "IMPORTANT" : "NOTE").replaceAll("{next}", next);
   return `${COMMENT_MARKER}
 ${body.trim()}
 `;
@@ -9794,9 +9840,7 @@ function planActions(input2) {
   if (kind === "admitted") {
     actions.push({
       kind: "update-comment",
-      body: `${COMMENT_MARKER}
-Thanks, @${pr.author}. This pull request now passes the contributor check (${decision.reason}).
-`
+      body: admittedMessage(pr.author, decision.reason)
     });
     return actions;
   }
@@ -9806,7 +9850,14 @@ Thanks, @${pr.author}. This pull request now passes the contributor check (${dec
   if (close || config.comment === "unknown") {
     actions.push({
       kind: "comment",
-      body: renderMessage(input2.template, { author: pr.author, reason: decision.reason, repo: pr.repo, closing: close })
+      body: renderMessage(input2.template, {
+        author: pr.author,
+        reason: decision.reason,
+        repo: pr.repo,
+        closing: close,
+        denounced: kind === "denounced",
+        rules: describeWaysToPass(config)
+      })
     });
   }
   if (close) actions.push({ kind: "close" });
