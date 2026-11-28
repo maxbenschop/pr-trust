@@ -1,6 +1,6 @@
 {
   "name": "pr-trust",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Contributor trust checks for GitHub pull requests: a GitHub Action, plus tools to try rules on any PR and backtest them on a year of history.",
   "license": "Apache-2.0",

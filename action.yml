@@ -1,5 +1,5 @@
 name: PR Trust
-description: Check pull request authors against contributor-trust rules, with Vouch list support, a /vouch comment command and re-checks when the list changes.
+description: Label pull requests by who opened them, using your trust rules, Vouch lists and contributors' merged work.
 author: maxbenschop
 branding:
   icon: check-square

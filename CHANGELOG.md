@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 (2026-11-28)
+
+- Shorter Action description, as the GitHub Marketplace requires (under 125 characters).
+  No change in behaviour.
+
 ## 0.1.2 (2026-11-28)
 
 - GitHub Enterprise Server and GitHub Enterprise Cloud with data residency (`ghe.com`): the

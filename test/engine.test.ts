@@ -304,3 +304,11 @@ describe("addVouch style", () => {
     expect(vouchEntry("# only comments\n", "NewBie")).toBe("newbie");
   });
 });
+
+describe("action.yml", () => {
+  it("keeps the description short enough for the GitHub Marketplace", async () => {
+    const fs = await import("node:fs");
+    const line = fs.readFileSync("action.yml", "utf8").split("\n").find((l) => l.startsWith("description: "))!;
+    expect(line.slice("description: ".length).length).toBeLessThan(125);
+  });
+});
